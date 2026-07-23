@@ -3,9 +3,9 @@
 
 This is the standard distribution method for products that wolfSSL owns. It
 copies the controlled share/ files into a product at a fixed path (tools/sbom/
-by default) and writes a pin (VERSION) next to them. It uses no network and no
-git submodule, so it works on air-gapped hosts and does not break source
-tarballs (see PLAN.md sections 10 and 16).
+by default) and writes the toolkit pin files (VERSION and .wolfglass-rev) next
+to them. It uses no network and no git submodule, so it works on air-gapped
+hosts and does not break source tarballs (see PLAN.md sections 10 and 16).
 
 Usage:
   wolfglass-sync --dest /path/to/product [options]
@@ -22,6 +22,7 @@ import argparse
 import filecmp
 import os
 import shutil
+import subprocess
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,10 +30,24 @@ DEFAULT_SRC = os.path.dirname(SCRIPT_DIR)  # repo root (tools/ is under it)
 
 
 def iter_share_files(share_dir):
-    for root, _dirs, files in os.walk(share_dir):
+    for root, dirs, files in os.walk(share_dir):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
         for name in files:
+            if name.endswith((".pyc", ".pyo")):
+                continue
             full = os.path.join(root, name)
             yield full, os.path.relpath(full, share_dir)
+
+
+def source_revision(src_root):
+    """Return the source git revision if available, else an empty string."""
+    try:
+        res = subprocess.run(
+            ["git", "-C", src_root, "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return res.stdout.strip()
 
 
 def main():
@@ -47,6 +62,7 @@ def main():
 
     share_dir = os.path.join(args.src, "share")
     version_file = os.path.join(args.src, "VERSION")
+    source_rev = source_revision(args.src)
     if not os.path.isdir(share_dir):
         sys.exit(f"ERROR: no share/ directory at {share_dir}")
 
@@ -64,6 +80,14 @@ def main():
             if not os.path.isfile(dst_v) or not filecmp.cmp(
                     version_file, dst_v, shallow=False):
                 drift.append("VERSION")
+        if source_rev:
+            dst_r = os.path.join(dest_root, ".wolfglass-rev")
+            if not os.path.isfile(dst_r):
+                drift.append(".wolfglass-rev")
+            else:
+                with open(dst_r, encoding="utf-8", errors="replace") as f:
+                    if f.read().strip() != source_rev:
+                        drift.append(".wolfglass-rev")
         if drift:
             print("DRIFT: vendored wolfGlass files differ from share/:",
                   file=sys.stderr)
@@ -82,8 +106,14 @@ def main():
         count += 1
     if os.path.isfile(version_file):
         shutil.copy2(version_file, os.path.join(dest_root, "VERSION"))
+    if source_rev:
+        with open(os.path.join(dest_root, ".wolfglass-rev"), "w",
+                  encoding="utf-8") as f:
+            f.write(source_rev + "\n")
     print(f"Synced {count} file(s) into {dest_root}")
-    print("Commit the vendored files and the VERSION pin.")
+    if source_rev:
+        print(f"Pinned wolfGlass revision: {source_rev}")
+    print("Commit the vendored files, VERSION, and .wolfglass-rev.")
 
 
 if __name__ == "__main__":

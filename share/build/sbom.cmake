@@ -19,9 +19,13 @@
 #   )
 #
 # Optional arguments:
-#   GEN_SBOM <path>   Path to gen-sbom (default: driver auto-discovery).
+#   SBOM_GEN <path>   Path to gen-sbom (default: driver auto-discovery).
+#   GEN_SBOM <path>   Legacy alias for SBOM_GEN.
 #   HOSTCC   <bin>    Host C compiler for macro capture (default: cc).
 #   ROOT     <dir>    Product root (default: CMAKE_CURRENT_SOURCE_DIR).
+#   TARGET_NAME <n>   Name of the custom target (default: sbom).
+#   CDX_OUT  <path>   Explicit CycloneDX output path.
+#   SPDX_OUT <path>   Explicit SPDX output path.
 #
 # NOTE: the driver is invoked as a program; on Windows run the target from a
 # shell environment (WSL/MSYS/Git-Bash) or use the Make/autotools path.
@@ -33,8 +37,9 @@ get_filename_component(_WOLFGLASS_DRIVER
 
 function(wolfglass_add_sbom)
     set(_opts NO_ARTIFACT_HASH SOURCE_ONLY)
-    set(_one NAME VERSION VERSION_FILE VERSION_MACRO LICENSE GEN_SBOM HOSTCC ROOT
-             LIB USER_SETTINGS OPTIONS_H DEP_WOLFSSL DEP_OPENSSL)
+    set(_one NAME TARGET_NAME VERSION VERSION_FILE VERSION_MACRO LICENSE
+             SBOM_GEN GEN_SBOM HOSTCC ROOT LIB USER_SETTINGS OPTIONS_H
+             DEP_WOLFSSL DEP_OPENSSL CDX_OUT SPDX_OUT)
     set(_multi TARGETS DEFS)
     cmake_parse_arguments(SB "${_opts}" "${_one}" "${_multi}" ${ARGN})
 
@@ -52,6 +57,12 @@ function(wolfglass_add_sbom)
     endif()
     if(NOT SB_HOSTCC)
         set(SB_HOSTCC cc)
+    endif()
+    if(NOT SB_TARGET_NAME)
+        set(SB_TARGET_NAME sbom)
+    endif()
+    if(NOT SB_SBOM_GEN AND SB_GEN_SBOM)
+        set(SB_SBOM_GEN ${SB_GEN_SBOM})
     endif()
 
     # Collect the compiled source set from the named targets. Skip generator
@@ -135,11 +146,17 @@ function(wolfglass_add_sbom)
     if(SB_DEP_OPENSSL)
         list(APPEND _cmd --dep-openssl ${SB_DEP_OPENSSL})
     endif()
-    if(SB_GEN_SBOM)
-        list(APPEND _cmd --gen-sbom ${SB_GEN_SBOM})
+    if(SB_SBOM_GEN)
+        list(APPEND _cmd --gen-sbom ${SB_SBOM_GEN})
+    endif()
+    if(SB_CDX_OUT)
+        list(APPEND _cmd --cdx-out ${SB_CDX_OUT})
+    endif()
+    if(SB_SPDX_OUT)
+        list(APPEND _cmd --spdx-out ${SB_SPDX_OUT})
     endif()
 
-    add_custom_target(sbom
+    add_custom_target(${SB_TARGET_NAME}
         COMMAND ${_cmd}
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         VERBATIM

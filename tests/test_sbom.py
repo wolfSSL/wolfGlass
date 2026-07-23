@@ -5,14 +5,14 @@ Two layers:
 
   * Unit tests always run. They need no gen-sbom. They cover the path scrub, the
     version parser, and the structural validator.
-  * Integration tests run only when gen-sbom is found (via --gen-sbom, GEN_SBOM,
-    or WOLFSSL_DIR). They cover a full generate for the source-embedded and the
+  * Integration tests run when gen-sbom is found (vendored, via --gen-sbom,
+    GEN_SBOM, or WOLFSSL_DIR). They cover a full generate for the source-embedded and the
     library paths, the path-scrub end to end, and byte-reproducibility.
 
 Usage:
   tests/test_sbom.py [--gen-sbom PATH]
   GEN_SBOM=/path/to/gen-sbom tests/test_sbom.py
-  WOLFSSL_DIR=/path/to/wolfssl tests/test_sbom.py
+  python3 tests/test_sbom.py
 """
 
 import argparse
@@ -59,6 +59,14 @@ def unit_tests():
     check("PICO_SDK_PATH" in scrubbed, "scrub keeps the macro name")
     check("HAVE_AES 1" in scrubbed, "scrub keeps non-path macros")
 
+    scrubbed = drv.scrub_defines(
+        '#define SDK_PATH "C:\\\\Users\\\\ci\\\\sdk"\n'
+        '#define SDK_SHARE "\\\\\\\\server\\\\share\\\\sdk"\n')
+    check("Users\\\\ci" not in scrubbed, "scrub removes Windows drive paths")
+    check("server\\\\share" not in scrubbed, "scrub removes Windows UNC paths")
+    check(scrubbed.count("<redacted-path>") == 2,
+          "scrub redacts both Windows absolute paths")
+
     with tempfile.TemporaryDirectory() as d:
         vh = os.path.join(d, "version.h")
         with open(vh, "w") as f:
@@ -93,14 +101,14 @@ def find_gen_sbom(explicit):
     env = os.environ.get("GEN_SBOM")
     if env and os.path.isfile(env):
         return env
+    vendored = os.path.join(SHARE, "gen-sbom")
+    if os.path.isfile(vendored):
+        return vendored
     wd = os.environ.get("WOLFSSL_DIR")
     if wd:
         cand = os.path.join(wd, "scripts", "gen-sbom")
         if os.path.isfile(cand):
             return cand
-    vendored = os.path.join(SHARE, "gen-sbom")
-    if os.path.isfile(vendored):
-        return vendored
     return None
 
 
@@ -178,7 +186,7 @@ def main():
         integration_tests(gen_sbom)
     else:
         print("[integration] SKIP: gen-sbom not found "
-              "(set GEN_SBOM or WOLFSSL_DIR)")
+              "(vendored copy missing; set GEN_SBOM or WOLFSSL_DIR)")
 
     if _fail:
         print(f"\n{_fail} check(s) FAILED", file=sys.stderr)

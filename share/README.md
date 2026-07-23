@@ -1,8 +1,8 @@
 # share/
 
 This is the only vendorable set. Use `tools/wolfglass-sync` to copy these files
-into a product at `tools/sbom/`, together with the pin. Do not copy the `share/`
-folder name; copy the files.
+into a product at `tools/sbom/`, together with the pin files (`VERSION` and
+`.wolfglass-rev`). Do not copy the `share/` folder name; copy the files.
 
 ## Contents
 
@@ -14,10 +14,10 @@ folder name; copy the files.
 | `frontends/compdb_sbom.py` | Extractor for any `compile_commands.json`. |
 | `frontends/iar_sbom.py` | Extractor for an IAR Embedded Workbench `.ewp`. |
 | `frontends/zephyr_sbom.py` | Extractor for a Zephyr module `CMakeLists.txt`. |
-| `build/sbom.mk` | Shared plain-Make fragment. |
+| `build/sbom.mk` | Shared plain-Make fragment and `wolfglass_sbom_rule` macro. |
 | `build/sbom.cmake` | Shared CMake helper: `wolfglass_add_sbom()`. |
-| `gen-sbom` | The SBOM generator (populated once the engine-home decision is signed off; see PLAN.md §21). |
-| `sbom.am` | The autotools fragment (to be lifted from wolfSSL). |
+| `gen-sbom` | The vendored SBOM generator. |
+| `sbom.am` | Shared autotools fragment. |
 
 ## The driver contract
 
@@ -47,16 +47,22 @@ The driver captures macros with the host compiler, so the SBOM is reproducible
 across toolchains. It scrubs absolute host paths from the captured macros unless
 you pass `--no-scrub`.
 
+The shared driver is product-neutral and calls the vendored `share/gen-sbom` by
+default. Pass `--gen-sbom` only when you want to override that copy.
+
 ## The manifest contract
 
 A product does not copy logic. It describes itself:
 
 - Make: set `SBOM_NAME`, `SBOM_SRCS`, `SBOM_CFLAGS`, and a version
   (`SBOM_VERSION`, or `SBOM_VERSION_FILE` + `SBOM_VERSION_MACRO`), then
-  `include tools/sbom/build/sbom.mk`.
+  `include tools/sbom/build/sbom.mk`. For a second target, instantiate
+  `$(eval $(call wolfglass_sbom_rule,<target>,<prefix>))`.
 - CMake: `include(tools/sbom/build/sbom.cmake)` and call `wolfglass_add_sbom()`
   with `NAME`, `VERSION_FILE`, `VERSION_MACRO`, `TARGETS`, `DEFS`, `LICENSE`.
-- Autotools: set the `SBOM_*` variables and `include sbom.am` (existing model).
+  `SBOM_GEN` is the canonical generator override; `GEN_SBOM` remains a legacy
+  alias for compatibility.
+- Autotools: set the `SBOM_*` variables and `include tools/sbom/sbom.am`.
 
 Keep only true product knowledge in the product: the route-through script, the
 module extractor, and the HAL source selector.

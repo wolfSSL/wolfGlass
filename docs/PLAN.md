@@ -215,7 +215,7 @@ Crystal programming language.
 Use the copy-sync method as the standard method for products that wolfSSL owns.
 
 - Run `wolfglass-sync` to copy the needed files.
-- Write the pin next to the files.
+- Write the pin next to the files (`VERSION` and `.wolfglass-rev`).
 - Add `make sbom-selfcheck` to detect drift.
 
 Use the out-of-tree mode for bundles that you must not change.
@@ -407,6 +407,7 @@ layer.
 **Phase 5 — Add the shared tools and CI.**
 
 1. Write `wolfglass-sync` and stamp the pin into each vendored copy.
+   The pin is `VERSION` plus `.wolfglass-rev`.
 2. Write the `wolfglass` out-of-tree driver.
 3. Write `wolfglass-bomsh` from the current bomsh recipe.
 4. Write the reusable workflows. Add the canary matrix. Add the drift check that

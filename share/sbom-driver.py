@@ -41,8 +41,19 @@ import tempfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-_ABS_PATH = re.compile(r'^/[^ ]+')
+_ABS_PATH_POSIX = re.compile(r'^/[^ ]+')
+_ABS_PATH_WINDOWS_DRIVE = re.compile(r'^[A-Za-z]:[\\/]')
+_ABS_PATH_WINDOWS_UNC = re.compile(r'^\\\\')
 _DEFINE = re.compile(r'^#define\s+(\S+)\s*(.*)$')
+
+
+def is_absolute_path_token(token):
+    """Return True when a macro token looks like an absolute host path."""
+    return bool(
+        _ABS_PATH_POSIX.match(token) or
+        _ABS_PATH_WINDOWS_DRIVE.match(token) or
+        _ABS_PATH_WINDOWS_UNC.match(token)
+    )
 
 
 def scrub_defines(text):
@@ -65,7 +76,7 @@ def scrub_defines(text):
         toks = []
         for t in val.split(" "):
             core = t.replace('"', '')
-            toks.append("<redacted-path>" if _ABS_PATH.match(core) else t)
+            toks.append("<redacted-path>" if is_absolute_path_token(core) else t)
         out.append("#define " + name + " " + " ".join(toks))
     return "\n".join(out) + "\n"
 
@@ -109,7 +120,13 @@ def gen_sbom_supports(python, gen_sbom, flag):
 
 
 def capture_macros(hostcc, cflags):
-    """Expand the -D tokens of CFLAGS through the host compiler's -dM -E."""
+    """Expand the -D tokens of CFLAGS through the host compiler's -dM -E.
+
+    Only tokens that start with ``-D`` are kept. ``-I``, ``-include``, and
+    every other flag are dropped. Products whose configuration is expressed
+    by ``-include``'ing a settings header must capture that header themselves
+    (``hostcc -dM -E ... -include ...``) and pass the dump via ``--options-h``.
+    """
     defs = [t for t in cflags.split() if t.startswith("-D")]
     cmd = [hostcc, "-dM", "-E", "-DWOLFSSL_USER_SETTINGS", *defs,
            "-x", "c", os.devnull]
