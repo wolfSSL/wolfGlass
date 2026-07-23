@@ -30,6 +30,7 @@ jobs:
             share/frontends/iar_sbom.py \
             share/frontends/zephyr_sbom.py \
             central/gen-advisory \
+            central/test_gen_advisory.py \
             provenance/bomsh_verify.py \
             tools/wolfglass-sync \
             tests/test_gen_sbom.py \
@@ -37,6 +38,9 @@ jobs:
 
       - name: Run generator unit tests
         run: python -m unittest tests/test_gen_sbom.py
+
+      - name: Run advisory generator unit tests
+        run: python -m unittest central/test_gen_advisory.py
 
       - name: Run self-test
         run: python tests/test_sbom.py
