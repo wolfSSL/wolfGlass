@@ -569,6 +569,44 @@ class TestGenerateCdxVex(unittest.TestCase):
         self.assertEqual(v['ratings'][0]['severity'], 'critical')
 
 
+class TestCdxVexNonWolfsslProduct(unittest.TestCase):
+    """Regression: a non-wolfssl product's CVE must be attributed to its own
+    component, not collapsed onto the wolfssl metadata.component (which would
+    make the CDX VEX say a wolfSSH bug is a wolfssl bug)."""
+
+    def setUp(self):
+        rec = {
+            'cveMetadata': {'cveId': 'CVE-2026-9001'},
+            'containers': {'cna': {
+                'descriptions': [{'lang': 'en', 'value': 'A wolfSSH issue.'}],
+                'affected': [{'vendor': 'wolfSSL', 'product': 'wolfSSH',
+                              'versions': [{'version': '0',
+                                            'lessThanOrEqual': '1.4.19',
+                                            'status': 'affected'}]}],
+            }},
+        }
+        self.bom = ga.generate_cdx_vex([ga.parse_record(rec)], {},
+                                       'wolfSSH-SA-1', PINNED_EPOCH_ISO)
+
+    def test_metadata_component_stays_wolfssl_umbrella(self):
+        self.assertEqual(self.bom['metadata']['component']['name'], 'wolfssl')
+
+    def test_product_gets_its_own_component(self):
+        comps = {c['name']: c for c in self.bom['components']}
+        self.assertIn('wolfSSH', comps)
+        self.assertEqual(comps['wolfSSH']['purl'], 'pkg:github/wolfSSL/wolfssh')
+        self.assertEqual(comps['wolfSSH']['cpe'],
+                         'cpe:2.3:a:wolfssl:wolfssh:*:*:*:*:*:*:*:*')
+
+    def test_affects_points_to_product_not_wolfssl(self):
+        wolfssh_ref = next(c['bom-ref'] for c in self.bom['components']
+                           if c['name'] == 'wolfSSH')
+        main_ref = self.bom['metadata']['component']['bom-ref']
+        refs = {a['ref'] for a in self.bom['vulnerabilities'][0]['affects']}
+        self.assertIn(wolfssh_ref, refs)
+        self.assertNotIn(main_ref, refs)
+
+
 # --------------------------------------------------------------------------- #
 # Overlay matches its own schema vocabulary (lightweight, no jsonschema).
 # The authoritative jsonschema pass runs in CI; this guards the committed
