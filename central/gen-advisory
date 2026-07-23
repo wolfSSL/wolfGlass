@@ -724,8 +724,22 @@ def generate_cdx_vex(advs, ov_map, advisory_id, timestamp):
                             {'name': 'wolfssl:fips:cmvp', 'value': m}
                             for m in prod['model_numbers']]
                     extra_components[ref] = comp
-            else:
+            elif prod['cdx_key'] == 'wolfssl':
                 ref = main_ref
+            else:
+                # Any other product (wolfSSH, wolfMQTT, wolfTPM, ...) gets its
+                # own correctly-named component rather than being collapsed
+                # onto the wolfssl metadata.component -- otherwise the CDX VEX
+                # attributes a non-wolfssl product's CVE to wolfssl.
+                ref = derived_uuid('cdx-component', prod['cdx_key'])
+                if ref not in extra_components:
+                    extra_components[ref] = {
+                        'bom-ref': ref, 'type': 'library',
+                        'supplier': {'name': 'wolfSSL Inc.'},
+                        'name': prod['product_name'],
+                        'cpe': cpe_for(prod['product_name'], '*'),
+                        'purl': f'pkg:github/wolfSSL/{prod["cdx_key"]}',
+                    }
             # CycloneDX affects[].versions[].status uses 'unaffected' for a
             # not-affected product; the 'not_affected' term belongs to
             # analysis.state only.
