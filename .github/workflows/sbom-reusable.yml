@@ -44,6 +44,9 @@ on:
 jobs:
   sbom:
     runs-on: ubuntu-latest
+    # This job only reads the product tree and uploads an artifact.
+    permissions:
+      contents: read
     steps:
       - name: Checkout product
         uses: actions/checkout@v4
@@ -53,29 +56,56 @@ jobs:
         with:
           python-version: '3.x'
 
+      # Caller inputs are bound to env and referenced as "$VAR" in the shell.
+      # Never interpolate ${{ inputs.* }} directly into a run: block: the runner
+      # substitutes it before the shell parses the script, so a value containing
+      # shell metacharacters would execute as code (this is a reusable workflow
+      # shipped to every product repo).  env values are not re-parsed by ${{ }}.
       - name: Check vendored drift
         if: inputs.wolfglass-ref != ''
+        env:
+          WOLFGLASS_REF: ${{ inputs.wolfglass-ref }}
+          VENDORED_PATH: ${{ inputs.vendored-path }}
         run: |
-          git clone --depth 1 --branch "${{ inputs.wolfglass-ref }}" \
+          git clone --depth 1 --branch "$WOLFGLASS_REF" \
             https://github.com/wolfSSL/wolfGlass _wolfglass
           python _wolfglass/tools/wolfglass-sync \
             --dest "$GITHUB_WORKSPACE" \
-            --subdir "${{ inputs.vendored-path }}" \
+            --subdir "$VENDORED_PATH" \
             --check
 
       - name: Build SBOM
-        run: ${{ inputs.build-command }}
+        env:
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: |
+          bash -c "$BUILD_COMMAND"
 
       - name: Validate SBOM
+        env:
+          VENDORED_PATH: ${{ inputs.vendored-path }}
+          NAME_PREFIX: ${{ inputs.name-prefix }}
+          OUTPUTS: ${{ inputs.outputs }}
         run: |
-          python "${{ inputs.vendored-path }}/validate_sbom.py" \
-            --name-prefix "${{ inputs.name-prefix }}" ${{ inputs.outputs }}
+          python "$VENDORED_PATH/validate_sbom.py" \
+            --name-prefix "$NAME_PREFIX" $OUTPUTS
 
       - name: Assert no host path leak
+        env:
+          OUTPUTS: ${{ inputs.outputs }}
         run: |
           # A published SBOM must not contain build-machine absolute paths.
-          if grep -REn '"/(home|Users|root)/' ${{ inputs.outputs }}; then
-            echo "ERROR: absolute host path found in SBOM (scrub failed)." >&2
+          # grep exit 0 = match (fail), 1 = clean, >=2 = real error (e.g. a glob
+          # that matched no file): treat only 1 as "clean" so a bad glob can't
+          # silently report OK.
+          set +e
+          out="$(grep -REn '"/(home|Users|root)/' $OUTPUTS)"
+          rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "ERROR: absolute host path found in SBOM (scrub failed):" >&2
+            echo "$out" >&2
+            exit 1
+          elif [ "$rc" -ne 1 ]; then
+            echo "ERROR: could not scan SBOM outputs (glob '$OUTPUTS' matched no file?)." >&2
             exit 1
           fi
           echo "OK: no host path leak."
