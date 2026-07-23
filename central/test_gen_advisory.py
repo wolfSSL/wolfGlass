@@ -754,6 +754,75 @@ class TestCliBehaviour(unittest.TestCase):
             self.assertFalse(os.path.exists(csaf))
 
 
+class TestOverlayValidation(unittest.TestCase):
+    """load_overlay must reject overlays the schema forbids -- above all a
+    not_affected determination missing its justification, which would otherwise
+    silently emit a wrong/omitted VEX justification."""
+
+    def _load(self, obj):
+        with tempfile.NamedTemporaryFile('w', suffix='.json',
+                                         delete=False) as f:
+            json.dump(obj, f)
+            path = f.name
+        try:
+            return ga.load_overlay(path)
+        finally:
+            os.unlink(path)
+
+    def test_vocab_matches_schema(self):
+        # The hand-rolled stdlib validator's vocabulary must stay in sync with
+        # advisory-vex-overlay.schema.json (the authoritative jsonschema pass).
+        with open(OVERLAY_SCHEMA) as f:
+            s = json.load(f)
+        d = s['$defs']
+        self.assertEqual(set(ga._STATE_TO_BUCKET),
+                         set(d['analysisState']['enum']))
+        self.assertEqual(set(ga._JUSTIFICATION_TO_CSAF_FLAG),
+                         set(d['justification']['enum']))
+        self.assertEqual(ga._OVERLAY_RESPONSES,
+                         set(d['response']['items']['enum']))
+        self.assertEqual(
+            ga._OVERLAY_DEFAULT_STATUS,
+            set(d['overlayEntry']['properties']['default_status']['enum']))
+        self.assertEqual(ga._OVERLAY_ENTRY_KEYS,
+                         set(d['overlayEntry']['properties']))
+        self.assertEqual(ga._OVERLAY_FIPS_KEYS, set(d['fips']['properties']))
+
+    def test_not_affected_without_justification_rejected(self):
+        with self.assertRaises(SystemExit):
+            self._load({'CVE-2026-1111': {'state': 'not_affected'}})
+
+    def test_not_affected_with_justification_ok(self):
+        ov = self._load({'CVE-2026-1111':
+                         {'state': 'not_affected',
+                          'justification': 'code_not_present'}})
+        self.assertIn('CVE-2026-1111', ov)
+
+    def test_fips_not_affected_without_justification_rejected(self):
+        with self.assertRaises(SystemExit):
+            self._load({'CVE-2026-1111': {
+                'state': 'exploitable',
+                'fips': {'name': 'wolfCrypt FIPS', 'status': 'not_affected'}}})
+
+    def test_unknown_key_rejected(self):
+        with self.assertRaises(SystemExit):
+            self._load({'CVE-2026-1111': {'state': 'exploitable',
+                                          'justifcation': 'typo'}})
+
+    def test_bad_state_enum_rejected(self):
+        with self.assertRaises(SystemExit):
+            self._load({'CVE-2026-1111': {'state': 'totally_safe'}})
+
+    def test_non_cve_key_rejected(self):
+        with self.assertRaises(SystemExit):
+            self._load({'not-a-cve': {'state': 'exploitable'}})
+
+    def test_comment_key_allowed(self):
+        ov = self._load({'_comment': 'note',
+                         'CVE-2026-1111': {'state': 'exploitable'}})
+        self.assertIn('CVE-2026-1111', ov)
+
+
 class TestPathIdValidation(unittest.TestCase):
     """cveId and --advisory-id are interpolated into output filenames; a
     record is fetched from a remote API and parsed as arbitrary JSON, so an

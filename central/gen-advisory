@@ -820,14 +820,84 @@ def generate_cdx_vex(advs, ov_map, advisory_id, timestamp):
 
 # --------------------------------------------------------------------------- #
 
+# Overlay vocabulary, mirroring advisory-vex-overlay.schema.json. The state and
+# justification enums are the maps' own keys; the two below and the allowed-key
+# sets complete the schema. test_overlay_vocab_matches_schema guards drift.
+_OVERLAY_RESPONSES = {'can_not_fix', 'will_not_fix', 'update', 'rollback',
+                      'workaround_available'}
+_OVERLAY_DEFAULT_STATUS = {'on', 'off', 'enabled', 'disabled'}
+_OVERLAY_ENTRY_KEYS = {'state', 'justification', 'response', 'detail',
+                       'fixed_versions', 'remediation', 'requires_defines',
+                       'default_status', 'fips'}
+_OVERLAY_FIPS_KEYS = {'name', 'module_version', 'cmvp_cert', 'status',
+                      'justification', 'fixed_versions', 'remediation'}
+
+
+def _check_analysis(cve, obj, allowed_keys, state_key, state_required, kind):
+    """Validate one overlay object (entry or its fips sub-object) against the
+    schema invariants that, if violated, would silently degrade the VEX output
+    -- above all a not_affected determination that omits its justification."""
+    if not isinstance(obj, dict):
+        sys.exit(f"ERROR: overlay {cve} {kind} must be a JSON object")
+    unknown = set(obj) - allowed_keys
+    if unknown:
+        sys.exit(f"ERROR: overlay {cve} {kind} has unknown key(s): "
+                 f"{', '.join(sorted(unknown))}")
+    state = obj.get(state_key)
+    if state_required and state is None:
+        sys.exit(f"ERROR: overlay {cve} {kind} is missing required "
+                 f"{state_key!r}")
+    if state is not None and state not in _STATE_TO_BUCKET:
+        sys.exit(f"ERROR: overlay {cve} {kind} {state_key}={state!r} is not a "
+                 f"valid state ({', '.join(sorted(_STATE_TO_BUCKET))})")
+    just = obj.get('justification')
+    if state == 'not_affected' and not just:
+        sys.exit(f"ERROR: overlay {cve} {kind} has {state_key}=not_affected "
+                 f"but no 'justification' (required so a CSAF flag / CycloneDX "
+                 f"analysis.justification can be emitted)")
+    if just is not None and just not in _JUSTIFICATION_TO_CSAF_FLAG:
+        sys.exit(f"ERROR: overlay {cve} {kind} justification={just!r} is not "
+                 f"valid ({', '.join(sorted(_JUSTIFICATION_TO_CSAF_FLAG))})")
+    resp = obj.get('response')
+    if resp is not None and (not isinstance(resp, list)
+                             or any(r not in _OVERLAY_RESPONSES for r in resp)):
+        sys.exit(f"ERROR: overlay {cve} {kind} response must be a list drawn "
+                 f"from {', '.join(sorted(_OVERLAY_RESPONSES))}")
+    ds = obj.get('default_status')
+    if ds is not None and ds not in _OVERLAY_DEFAULT_STATUS:
+        sys.exit(f"ERROR: overlay {cve} {kind} default_status={ds!r} is not "
+                 f"valid ({', '.join(sorted(_OVERLAY_DEFAULT_STATUS))})")
+
+
+def _validate_overlay(ov_map):
+    """Enforce the overlay schema's structural invariants at load time
+    (stdlib-only; the authoritative jsonschema pass runs in CI). Without this a
+    hand-edited overlay silently produces a wrong/omitted VEX justification."""
+    if not isinstance(ov_map, dict):
+        sys.exit("ERROR: --vex-overlay must be a JSON object keyed by CVE id")
+    for cve, entry in ov_map.items():
+        if cve == '_comment':
+            continue
+        if not _CVE_ID_RE.match(cve):
+            sys.exit(f"ERROR: overlay key {cve!r} is not a CVE id "
+                     f"(expected {_CVE_ID_RE.pattern})")
+        _check_analysis(cve, entry, _OVERLAY_ENTRY_KEYS, 'state', True, 'entry')
+        fips = entry.get('fips')
+        if fips is not None:
+            _check_analysis(cve, fips, _OVERLAY_FIPS_KEYS, 'status', False,
+                            'fips')
+
+
 def load_overlay(path):
     if not path:
         return {}
     try:
         with open(path) as f:
-            return json.load(f)
+            data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
         sys.exit(f"ERROR: cannot read --vex-overlay {path!r}: {e}")
+    _validate_overlay(data)
+    return data
 
 
 def _write_json(obj, path):
