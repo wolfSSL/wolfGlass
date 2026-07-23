@@ -1,0 +1,19 @@
+# Generated SBOM artifacts (do not commit; regenerate from a tag)
+*.cdx.json
+*.spdx.json
+*.spdx
+
+# Build provenance output
+omnibor/
+*_raw_logfile*
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+*.swp

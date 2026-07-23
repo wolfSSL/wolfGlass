@@ -1,0 +1,47 @@
+name: wolfGlass self-test
+
+# Runs the wolfGlass unit and integration tests on every change. The unit tests
+# (scrub, version parse, validate) need no generator. The integration tests run
+# only when a gen-sbom is available; this job checks out wolfSSL to provide one.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout wolfGlass
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Syntax-check all Python
+        run: |
+          python -m py_compile \
+            share/sbom-driver.py \
+            share/validate_sbom.py \
+            share/frontends/compdb_sbom.py \
+            share/frontends/iar_sbom.py \
+            share/frontends/zephyr_sbom.py \
+            tools/wolfglass-sync \
+            tests/test_sbom.py
+
+      - name: Checkout wolfSSL (for gen-sbom)
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: wolfSSL/wolfssl
+          path: _wolfssl
+
+      - name: Run self-test
+        run: |
+          if [ -f _wolfssl/scripts/gen-sbom ]; then
+            export WOLFSSL_DIR="$GITHUB_WORKSPACE/_wolfssl"
+          fi
+          python tests/test_sbom.py

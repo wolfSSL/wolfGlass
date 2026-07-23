@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""wolfglass-sync - vendor the wolfGlass share/ set into a product repository.
+
+This is the standard distribution method for products that wolfSSL owns. It
+copies the controlled share/ files into a product at a fixed path (tools/sbom/
+by default) and writes a pin (VERSION) next to them. It uses no network and no
+git submodule, so it works on air-gapped hosts and does not break source
+tarballs (see PLAN.md sections 10 and 16).
+
+Usage:
+  wolfglass-sync --dest /path/to/product [options]
+
+Options:
+  --dest PATH     Product repository root (required).
+  --subdir NAME   Vendored path inside the product. Default: tools/sbom.
+  --src PATH      wolfGlass repository root. Default: derived from this script.
+  --check         Do not copy. Report drift and exit non-zero if any file
+                  differs. Use this in a product's CI drift check.
+"""
+
+import argparse
+import filecmp
+import os
+import shutil
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_SRC = os.path.dirname(SCRIPT_DIR)  # repo root (tools/ is under it)
+
+
+def iter_share_files(share_dir):
+    for root, _dirs, files in os.walk(share_dir):
+        for name in files:
+            full = os.path.join(root, name)
+            yield full, os.path.relpath(full, share_dir)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--dest", required=True)
+    ap.add_argument("--subdir", default="tools/sbom")
+    ap.add_argument("--src", default=DEFAULT_SRC)
+    ap.add_argument("--check", action="store_true")
+    args = ap.parse_args()
+
+    share_dir = os.path.join(args.src, "share")
+    version_file = os.path.join(args.src, "VERSION")
+    if not os.path.isdir(share_dir):
+        sys.exit(f"ERROR: no share/ directory at {share_dir}")
+
+    dest_root = os.path.join(args.dest, args.subdir)
+    files = sorted(iter_share_files(share_dir), key=lambda p: p[1])
+
+    if args.check:
+        drift = []
+        for src, rel in files:
+            dst = os.path.join(dest_root, rel)
+            if not os.path.isfile(dst) or not filecmp.cmp(src, dst, shallow=False):
+                drift.append(rel)
+        if os.path.isfile(version_file):
+            dst_v = os.path.join(dest_root, "VERSION")
+            if not os.path.isfile(dst_v) or not filecmp.cmp(
+                    version_file, dst_v, shallow=False):
+                drift.append("VERSION")
+        if drift:
+            print("DRIFT: vendored wolfGlass files differ from share/:",
+                  file=sys.stderr)
+            for rel in drift:
+                print(f"  {rel}", file=sys.stderr)
+            print("Re-run wolfglass-sync to update.", file=sys.stderr)
+            sys.exit(1)
+        print("OK: vendored wolfGlass files match share/.")
+        return
+
+    count = 0
+    for src, rel in files:
+        dst = os.path.join(dest_root, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+        count += 1
+    if os.path.isfile(version_file):
+        shutil.copy2(version_file, os.path.join(dest_root, "VERSION"))
+    print(f"Synced {count} file(s) into {dest_root}")
+    print("Commit the vendored files and the VERSION pin.")
+
+
+if __name__ == "__main__":
+    main()
