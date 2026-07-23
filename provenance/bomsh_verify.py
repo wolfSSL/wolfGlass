@@ -167,26 +167,45 @@ def verify(spdx_glob, omnibor_dir):
     spdx_paths = sorted(_glob.glob(spdx_glob))
     if not spdx_paths:
         return False, [f'no SPDX matched {spdx_glob!r}']
-    spdx_path = spdx_paths[0]
-    try:
-        spdx_gitoids = load_spdx_gitoids(spdx_path)
-    except (json.JSONDecodeError, ValueError) as e:
-        return False, [f'could not load SPDX gitoids: {e}']
-    if not spdx_gitoids:
-        return False, [f'no gitoid externalRefs in {spdx_path}']
 
     objects_dir = os.path.join(omnibor_dir, 'objects')
+    ok = True
+    total_gitoids = 0
 
-    missing = check_resolvability(spdx_gitoids, objects_dir)
-    if missing:
-        for pkg_name, gid, obj in missing:
+    # (A) EVERY matched SPDX must load and have all its gitoids resolve --
+    # not just spdx_paths[0].  When the glob matches several documents (e.g.
+    # one per product/version), verifying only the first lets a broken or
+    # tampered SPDX that sorts later pass unexamined; for a provenance
+    # verifier a silent pass is the failure to avoid.  Problems are
+    # accumulated (rather than returned on the first) so one run reports every
+    # broken document.
+    for spdx_path in spdx_paths:
+        try:
+            spdx_gitoids = load_spdx_gitoids(spdx_path)
+        except (json.JSONDecodeError, ValueError) as e:
             messages.append(
-                f'DANGLING: {pkg_name} gitoid {gid} -> {obj}')
+                f'could not load SPDX gitoids from {spdx_path}: {e}')
+            ok = False
+            continue
+        if not spdx_gitoids:
+            messages.append(f'no gitoid externalRefs in {spdx_path}')
+            ok = False
+            continue
+        missing = check_resolvability(spdx_gitoids, objects_dir)
+        if missing:
+            for pkg_name, gid, obj in missing:
+                messages.append(
+                    f'DANGLING: {spdx_path}: {pkg_name} gitoid {gid} -> {obj}')
+            messages.append(
+                f'{len(missing)} SPDX gitoid(s) from {spdx_path} not present '
+                f'in {objects_dir}/ (provenance bundle is broken)')
+            ok = False
+            continue
+        total_gitoids += len(spdx_gitoids)
         messages.append(
-            f'{len(missing)} SPDX gitoid(s) not present in '
-            f'{objects_dir}/ (provenance bundle is broken)')
-        return False, messages
+            f'OK: {spdx_path}: {len(spdx_gitoids)} gitoid(s) verified')
 
+    # (B) Object-store integrity, once for the whole store.
     obj_count, bad = check_object_store_integrity(objects_dir)
     if bad:
         for obj, expected, actual in bad[:5]:
@@ -195,11 +214,14 @@ def verify(spdx_glob, omnibor_dir):
         messages.append(
             f'{len(bad)} object(s) in {objects_dir}/ failed gitoid '
             f'round-trip (object store is corrupt)')
-        return False, messages
+        ok = False
 
-    messages.append(f'OK: {len(spdx_gitoids)} gitoid(s) verified')
-    messages.append(f'    objects round-trip: {obj_count} blobs')
-    return True, messages
+    if ok:
+        messages.append(
+            f'OK: {len(spdx_paths)} SPDX file(s), {total_gitoids} '
+            f'gitoid(s) verified')
+        messages.append(f'    objects round-trip: {obj_count} blobs')
+    return ok, messages
 
 
 def main():
