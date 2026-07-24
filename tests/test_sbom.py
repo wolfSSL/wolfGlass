@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHARE = os.path.join(REPO, "share")
@@ -242,6 +243,20 @@ def integration_tests(gen_sbom):
                                   "--name-prefix", "selftest", cdx],
                                  stdout=subprocess.DEVNULL)
             check(rc == 0, "generated CycloneDX validates")
+        # Independent oracle: validate_sbom.py is a shallow same-repo check, so
+        # also run the external pyspdxtools schema validator when it is present
+        # (skip cleanly when it is not, so the self-test stays dependency-free).
+        spdx = os.path.join(d, "e.spdx.json")
+        if os.path.isfile(spdx):
+            try:
+                rc = subprocess.call(["pyspdxtools", "--infile", spdx],
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+                check(rc == 0,
+                      "generated SPDX validates with pyspdxtools (independent)")
+            except FileNotFoundError:
+                print("  skip: pyspdxtools not installed "
+                      "(independent SPDX oracle)")
 
         # Library path (tier R/L/S): hash a built artifact.
         lib = os.path.join(d, "libselftest.a")
@@ -265,6 +280,30 @@ def integration_tests(gen_sbom):
             p = os.path.join(d, f"r{i}.cdx.json")
             outs.append(open(p).read() if os.path.isfile(p) else f"<missing {i}>")
         check(outs[0] == outs[1], "byte-reproducible CycloneDX")
+
+
+class TestSelfTest(unittest.TestCase):
+    """Discoverable entry points so `pytest tests/` and `python -m unittest`
+    actually run the self-test. The checks live in helper functions that use a
+    check() accumulator rather than test_-prefixed callables, so without this
+    class a test runner collects this module and runs NOTHING while exiting 0 --
+    silently dropping all reproducibility / path-scrub / end-to-end coverage.
+    The __main__ path below (python tests/test_sbom.py) is unchanged."""
+
+    def setUp(self):
+        global _fail
+        _fail = 0
+
+    def test_unit(self):
+        unit_tests()
+        self.assertEqual(_fail, 0, "self-test unit checks failed")
+
+    def test_integration(self):
+        gen_sbom = find_gen_sbom("")
+        if gen_sbom is None:
+            self.skipTest("gen-sbom not found (set GEN_SBOM or WOLFSSL_DIR)")
+        integration_tests(gen_sbom)
+        self.assertEqual(_fail, 0, "self-test integration checks failed")
 
 
 def main():
