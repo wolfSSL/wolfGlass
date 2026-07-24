@@ -35,6 +35,7 @@ reach gen-sbom (for example -DPICO_SDK_PATH=/home/you/pico-sdk from arch.mk). Us
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -110,7 +111,15 @@ def gen_sbom_supports(python, gen_sbom, flag):
 
 def capture_macros(hostcc, cflags):
     """Expand the -D tokens of CFLAGS through the host compiler's -dM -E."""
-    defs = [t for t in cflags.split() if t.startswith("-D")]
+    # shlex, not str.split: a define with a quoted spaced value such as
+    # -DBANNER="a b" must stay a single token (-DBANNER=a b). Plain split()
+    # tears it into '-DBANNER="a' + 'b"' and drops the tail, silently corrupting
+    # the captured build configuration.
+    try:
+        tokens = shlex.split(cflags)
+    except ValueError as e:
+        sys.exit(f"ERROR: could not parse --cflags {cflags!r}: {e}")
+    defs = [t for t in tokens if t.startswith("-D")]
     cmd = [hostcc, "-dM", "-E", "-DWOLFSSL_USER_SETTINGS", *defs,
            "-x", "c", os.devnull]
     try:

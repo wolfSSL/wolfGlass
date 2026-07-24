@@ -19,6 +19,7 @@ import argparse
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -66,6 +67,18 @@ def unit_tests():
         check(drv.read_version(vh, "LIBWOLFBOOT_VERSION_STRING") == "2.4.0",
               "version parser reads the macro")
         check(drv.read_version(vh, "NOPE") == "", "version parser misses cleanly")
+
+    # capture_macros must tokenise CFLAGS with shlex, not str.split, so a
+    # quoted spaced -D value survives as one define instead of being torn
+    # apart. Needs a host compiler; skip cleanly when none is present.
+    cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if cc:
+        out = drv.capture_macros(cc, '-DHAVE_AES -DWG_BANNER="a b c"')
+        check("#define HAVE_AES" in out, "capture_macros keeps a plain -D")
+        check("#define WG_BANNER a b c" in out,
+              "capture_macros preserves a quoted spaced -D value")
+    else:
+        print("  skip: no host cc for capture_macros test")
 
     # Validator: a good CycloneDX passes with the right prefix; a wrong prefix
     # fails.
