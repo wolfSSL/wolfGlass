@@ -66,7 +66,20 @@ def main():
     if not os.path.isdir(share_dir):
         sys.exit(f"ERROR: no share/ directory at {share_dir}")
 
+    # --subdir is joined onto --dest and then written into. An absolute value
+    # (os.path.join discards --dest) or one containing .. would place and
+    # overwrite files outside the product's vendoring path, so require it to
+    # resolve to a location inside --dest.
+    if os.path.isabs(args.subdir):
+        sys.exit(f"ERROR: --subdir must be relative to --dest, got absolute "
+                 f"{args.subdir!r}.")
     dest_root = os.path.join(args.dest, args.subdir)
+    dest_abs = os.path.realpath(args.dest)
+    dest_root_abs = os.path.realpath(dest_root)
+    if dest_root_abs != dest_abs and \
+            not dest_root_abs.startswith(dest_abs + os.sep):
+        sys.exit(f"ERROR: --subdir {args.subdir!r} escapes --dest; it must "
+                 f"resolve to a path inside {args.dest!r}.")
     files = sorted(iter_share_files(share_dir), key=lambda p: p[1])
 
     if args.check:
