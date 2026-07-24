@@ -126,6 +126,39 @@ vendor ports are a separate, currently-unwired category of their own.
 - Product-specific build knowledge stays inside the product's frontend, never
   leaks into the shared engine.
 
+## Document identity
+
+The CycloneDX `serialNumber` and the SPDX `documentNamespace` are derived from
+the package name, the version, and a digest of the build configuration, so two
+SBOMs for one release but different configurations (FIPS vs non-FIPS, a
+different `--srcs` set, a different feature-flag or dependency set, a different
+supplier or component type) get distinct identifiers. SPDX 2.3 section 6.5 requires
+`documentNamespace` to be unique, and a CycloneDX `version: 1` document sharing
+a `serialNumber` with differing content is self-contradictory.
+
+The rule the generator holds to: **every input that can change the document
+body reaches the identity digest.** `tests/test_sbom_identity.py` enforces it
+over the whole option set, so a new option cannot land without being
+classified identity-relevant or identity-exempt.
+
+Reproducibility is unaffected: an identical configuration still produces
+byte-identical output, including the identifiers.
+
+**One-time rotation.** Identifiers changed once when the configuration digest
+was introduced, and again whenever a new input is folded in. SBOMs published
+before that carry the old values. This is a rotation, not a break: the
+identifiers were previously wrong (colliding across configurations), and
+nothing downstream should pin a literal `serialNumber`.
+
+**Identity follows the artefact on the `--lib` path.** The library's SHA-256
+is part of the digest, so rebuilding identical sources with a different
+toolchain moves the `serialNumber` even though no configuration input changed.
+That is deliberate. An SBOM generated from `--lib` describes one specific
+binary, and two binaries with different hashes are two artefacts; giving them
+one identifier would be the same collision in a different disguise. The
+`--srcs` and `--no-artifact-hash` paths do not have this property, because
+neither hashes a compiler output.
+
 ## Distribution: vendor a snapshot, not a dependency
 
 Products vendor a snapshot of the toolkit into their own tree (`tools/sbom/`

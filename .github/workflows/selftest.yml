@@ -37,13 +37,17 @@ jobs:
             provenance/bomsh_verify.py \
             tools/wolfglass-sync \
             tests/test_gen_sbom.py \
-            tests/test_sbom.py
+            tests/test_sbom.py \
+            tests/test_sbom_identity.py
 
       - name: Run generator unit tests
         run: python -m unittest tests/test_gen_sbom.py
 
       - name: Run advisory generator unit tests
         run: python -m unittest central/test_gen_advisory.py
+
+      - name: Run SBOM identity tests
+        run: python -m unittest tests/test_sbom_identity.py
 
       - name: Run self-test
         run: python tests/test_sbom.py
