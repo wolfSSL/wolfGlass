@@ -19,40 +19,9 @@
 #   )
 #
 # Optional arguments:
-#   SBOM_GEN <path>   Path to gen-sbom (default: driver auto-discovery).
-#   GEN_SBOM <path>   Legacy alias for SBOM_GEN.
+#   GEN_SBOM <path>   Path to gen-sbom (default: driver auto-discovery).
 #   HOSTCC   <bin>    Host C compiler for macro capture (default: cc).
 #   ROOT     <dir>    Product root (default: CMAKE_CURRENT_SOURCE_DIR).
-#   TARGET_NAME <n>   Name of the custom target (default: sbom).
-#   CDX_OUT  <path>   Explicit CycloneDX output path.
-#   SPDX_OUT <path>   Explicit SPDX output path.
-#   COMPONENT_TYPE <t>  CycloneDX component.type, e.g. firmware for a
-#                     bootloader (default: the generator's own default).
-#   SETTINGS_H <path> Settings header included in the macro capture, so DEFS
-#                     are interpreted by the header that derives from them.
-#                     Without it the capture sees the -D list alone and every
-#                     derived macro (WOLFCRYPT_ONLY and friends) is missing,
-#                     which is how the CMake path used to record a different
-#                     configuration than the Make path for the same product.
-#   INCLUDE_DIRS <dir>...  Include directories for that capture (typically the
-#                     directory holding user_settings.h).
-#   DEP_WOLFSSL yes|no  Record wolfSSL as a dependency component.
-#   DEP_WOLFCRYPT yes|no  Record wolfCrypt as a component (registered NVD CPE).
-#   DEP_OPENSSL yes|no  Record OpenSSL as a dependency component.
-#   CRYPTO_ONLY auto|yes|no  Whether only the wolfCrypt subset of wolfSSL is
-#                     compiled in (default auto: read from the capture).
-#   DEP_VERSION <KEY=VER>...  Explicit dependency versions. A cross build has
-#                     no pkg-config for the dependency, so without this the
-#                     dependency component carries no version, and therefore
-#                     no PURL and no CPE for a scanner to match.
-#   LICENSE_OVERRIDE <expr>  SPDX expression recorded instead of the one
-#                     inferred from LICENSE.
-#   LICENSE_TEXT <path>  Plain-text licence for a LicenseRef-* used in
-#                     LICENSE_OVERRIDE (required by SPDX 2.3).
-#
-# These mirror the SBOM_* variables of build/sbom.mk one for one; the two
-# fragments must accept the same product description, or the same product
-# yields two different documents depending on which build system generated it.
 #
 # NOTE: the driver is invoked as a program; on Windows run the target from a
 # shell environment (WSL/MSYS/Git-Bash) or use the Make/autotools path.
@@ -64,12 +33,9 @@ get_filename_component(_WOLFGLASS_DRIVER
 
 function(wolfglass_add_sbom)
     set(_opts NO_ARTIFACT_HASH SOURCE_ONLY)
-    set(_one NAME TARGET_NAME VERSION VERSION_FILE VERSION_MACRO LICENSE
-             SBOM_GEN GEN_SBOM HOSTCC ROOT LIB USER_SETTINGS OPTIONS_H SETTINGS_H
-             DEP_WOLFSSL DEP_WOLFCRYPT DEP_OPENSSL CRYPTO_ONLY
-             CDX_OUT SPDX_OUT COMPONENT_TYPE
-             LICENSE_OVERRIDE LICENSE_TEXT)
-    set(_multi TARGETS DEFS DEP_VERSION INCLUDE_DIRS)
+    set(_one NAME VERSION VERSION_FILE VERSION_MACRO LICENSE GEN_SBOM HOSTCC ROOT
+             LIB USER_SETTINGS OPTIONS_H DEP_WOLFSSL DEP_OPENSSL)
+    set(_multi TARGETS DEFS)
     cmake_parse_arguments(SB "${_opts}" "${_one}" "${_multi}" ${ARGN})
 
     if(NOT SB_NAME)
@@ -86,12 +52,6 @@ function(wolfglass_add_sbom)
     endif()
     if(NOT SB_HOSTCC)
         set(SB_HOSTCC cc)
-    endif()
-    if(NOT SB_TARGET_NAME)
-        set(SB_TARGET_NAME sbom)
-    endif()
-    if(NOT SB_SBOM_GEN AND SB_GEN_SBOM)
-        set(SB_SBOM_GEN ${SB_GEN_SBOM})
     endif()
 
     # Collect the compiled source set from the named targets. Skip generator
@@ -158,14 +118,6 @@ function(wolfglass_add_sbom)
         endforeach()
         string(STRIP "${_cflags}" _cflags)
         list(APPEND _cmd "--cflags=${_cflags}")
-        # Only meaningful alongside --cflags: the driver warns and ignores
-        # them otherwise.
-        if(SB_SETTINGS_H)
-            list(APPEND _cmd --settings-h ${SB_SETTINGS_H})
-        endif()
-        foreach(_inc IN LISTS SB_INCLUDE_DIRS)
-            list(APPEND _cmd --include-dir ${_inc})
-        endforeach()
     endif()
 
     if(SB_VERSION)
@@ -177,41 +129,25 @@ function(wolfglass_add_sbom)
     if(SB_VERSION_MACRO)
         list(APPEND _cmd --version-macro ${SB_VERSION_MACRO})
     endif()
-    if(SB_COMPONENT_TYPE)
-        list(APPEND _cmd --component-type ${SB_COMPONENT_TYPE})
-    endif()
-    if(SB_LICENSE_OVERRIDE)
-        list(APPEND _cmd --license-override ${SB_LICENSE_OVERRIDE})
-    endif()
-    if(SB_LICENSE_TEXT)
-        list(APPEND _cmd --license-text ${SB_LICENSE_TEXT})
-    endif()
     if(SB_DEP_WOLFSSL)
         list(APPEND _cmd --dep-wolfssl ${SB_DEP_WOLFSSL})
-    endif()
-    if(SB_DEP_WOLFCRYPT)
-        list(APPEND _cmd --dep-wolfcrypt ${SB_DEP_WOLFCRYPT})
     endif()
     if(SB_DEP_OPENSSL)
         list(APPEND _cmd --dep-openssl ${SB_DEP_OPENSSL})
     endif()
-    if(SB_CRYPTO_ONLY)
-        list(APPEND _cmd --crypto-only ${SB_CRYPTO_ONLY})
-    endif()
-    foreach(_dv IN LISTS SB_DEP_VERSION)
-        list(APPEND _cmd --dep-version ${_dv})
-    endforeach()
-    if(SB_SBOM_GEN)
-        list(APPEND _cmd --gen-sbom ${SB_SBOM_GEN})
-    endif()
-    if(SB_CDX_OUT)
-        list(APPEND _cmd --cdx-out ${SB_CDX_OUT})
-    endif()
-    if(SB_SPDX_OUT)
-        list(APPEND _cmd --spdx-out ${SB_SPDX_OUT})
+    if(SB_GEN_SBOM)
+        list(APPEND _cmd --gen-sbom ${SB_GEN_SBOM})
     endif()
 
-    add_custom_target(${SB_TARGET_NAME}
+    # The first call in a project owns the plain `sbom` target (the documented
+    # entry point); a second call (a project with two libraries needing separate
+    # SBOMs) would otherwise fail with "target already exists", so it gets a
+    # name-qualified target instead.
+    set(_sbom_target sbom)
+    if(TARGET sbom)
+        set(_sbom_target sbom-${SB_NAME})
+    endif()
+    add_custom_target(${_sbom_target}
         COMMAND ${_cmd}
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         VERBATIM

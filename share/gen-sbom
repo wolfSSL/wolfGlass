@@ -260,6 +260,32 @@ def build_timestamp():
     return dt, dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
+def write_json_atomic(obj, path):
+    """Write `obj` as JSON to `path` atomically via a sibling temp file and
+    os.replace, so a crash or ENOSPC mid-write cannot leave a truncated
+    document that a later CI step would pick up as valid."""
+    # A special file (e.g. /dev/null, a fifo) cannot be produced by the
+    # temp-file+rename dance -- there is no sibling to rename over -- so write
+    # those directly.  Regular paths (existing or not) get the atomic write.
+    if os.path.exists(path) and not os.path.isfile(path):
+        with open(path, 'w') as f:
+            json.dump(obj, f, indent=2)
+            f.write('\n')
+        return
+    tmp = f'{path}.tmp'
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(obj, f, indent=2)
+            f.write('\n')
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 # Known metadata for optional external dependencies.  Version is detected
 # at runtime via pkg-config; falls back to None.  Each entry must describe
 # the *linked artefact* (so vulnerability scanners like OSV / Grype / Trivy
@@ -958,11 +984,16 @@ def _collect_srcs(srcs_args, srcs_file):
                 continue
             paths.append(stripped)
 
+    # Dedup on the resolved path, not the raw string, so the same physical file
+    # spelled two ways (foo.c and ./foo.c) collapses to one entry instead of
+    # tripping srcs_merkle_hash's duplicate-basename guard.  The first spelling
+    # is kept for opening/hashing.
     seen = set()
     deduped = []
     for p in paths:
-        if p not in seen:
-            seen.add(p)
+        key = os.path.realpath(p)
+        if key not in seen:
+            seen.add(key)
             deduped.append(p)
 
     if not deduped:
@@ -1786,12 +1817,8 @@ def main():
     )
 
     try:
-        with open(args.cdx_out, 'w') as f:
-            json.dump(cdx, f, indent=2)
-            f.write('\n')
-        with open(args.spdx_out, 'w') as f:
-            json.dump(spdx, f, indent=2)
-            f.write('\n')
+        write_json_atomic(cdx, args.cdx_out)
+        write_json_atomic(spdx, args.spdx_out)
     except OSError as e:
         sys.exit(f"ERROR: cannot write SBOM output: {e}")
 
