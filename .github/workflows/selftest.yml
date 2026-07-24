@@ -61,5 +61,5 @@ jobs:
       - name: Run SBOM identity tests
         run: python -m unittest tests/test_sbom_identity.py
 
-      - name: Run self-test
-        run: python tests/test_sbom.py
+      - name: Run self-test (via unittest discovery)
+        run: python -m unittest tests/test_sbom.py
