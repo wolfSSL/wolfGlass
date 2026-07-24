@@ -73,8 +73,8 @@ sbom:
 	    $(if $(SBOM_VERSION),--version "$(SBOM_VERSION)") \
 	    $(if $(SBOM_VERSION_FILE),--version-file "$(SBOM_VERSION_FILE)") \
 	    $(if $(SBOM_VERSION_MACRO),--version-macro "$(SBOM_VERSION_MACRO)") \
-	    $(if $(SBOM_DEP_WOLFSSL),--dep-wolfssl "$(SBOM_DEP_WOLFSSL)") \
-	    $(if $(SBOM_DEP_OPENSSL),--dep-openssl "$(SBOM_DEP_OPENSSL)") \
+	    $(if $(filter yes,$(SBOM_DEP_WOLFSSL)),--dep-wolfssl yes) \
+	    $(if $(filter yes,$(SBOM_DEP_OPENSSL)),--dep-openssl yes) \
 	    $(if $(SBOM_GEN),--gen-sbom "$(SBOM_GEN)") \
 	    $(if $(SBOM_CDX_OUT),--cdx-out "$(SBOM_CDX_OUT)") \
 	    $(if $(SBOM_SPDX_OUT),--spdx-out "$(SBOM_SPDX_OUT)")

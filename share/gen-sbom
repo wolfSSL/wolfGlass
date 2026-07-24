@@ -1252,15 +1252,22 @@ def main():
                 "https://example.com/sbom/wolfssl-X.Y.Z.spdx.json or "
                 "urn:uuid:00000000-0000-0000-0000-000000000000.")
 
-    enabled_deps = [
-        key for key, flag in [
-            ('wolfssl', args.dep_wolfssl),
-            ('openssl', args.dep_openssl),
-            ('libz',    args.dep_libz),
-            ('liboqs',  args.dep_liboqs),
-        ]
-        if flag.lower() == 'yes'
+    # Validate every --dep-* value against {yes, no} rather than silently
+    # treating anything that is not 'yes' as 'no'.  A build fragment that wires
+    # --dep-wolfssl=$(HAVE_WOLFSSL) where the variable expands to 1/true/on/Y
+    # would otherwise drop a CVE-bearing dependency from the SBOM with no
+    # warning -- exactly the failure a CRA tool must not make quietly.
+    dep_inputs = [
+        ('wolfssl', '--dep-wolfssl', args.dep_wolfssl),
+        ('openssl', '--dep-openssl', args.dep_openssl),
+        ('libz',    '--dep-libz',    args.dep_libz),
+        ('liboqs',  '--dep-liboqs',  args.dep_liboqs),
     ]
+    for _key, opt, val in dep_inputs:
+        if val.lower() not in ('yes', 'no'):
+            sys.exit(f"ERROR: {opt} must be 'yes' or 'no', got {val!r}.")
+    enabled_deps = [key for key, _opt, val in dep_inputs
+                    if val.lower() == 'yes']
     dep_version_overrides = _parse_dep_version_overrides(args.dep_version)
     # Resolve each enabled dependency's version once, here, and feed the
     # result to both the CDX and SPDX emitters via the overrides map (see
