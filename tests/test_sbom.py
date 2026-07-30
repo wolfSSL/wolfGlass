@@ -75,6 +75,73 @@ def unit_tests():
               "version parser reads the macro")
         check(drv.read_version(vh, "NOPE") == "", "version parser misses cleanly")
 
+    print("[unit] config capture")
+    # The capture must see BOTH halves of the configuration: the -D tokens and
+    # the settings header that interprets them.  Regression: capturing -D
+    # tokens alone against an empty translation unit dropped every derived
+    # macro, so a wolfBoot SBOM listed a signing bootloader with no signature
+    # algorithm.  The reverse omission (header, no -D) is equally wrong, so
+    # both directions are pinned here.
+    with tempfile.TemporaryDirectory() as d:
+        inc = os.path.join(d, "inc")
+        os.mkdir(inc)
+        with open(os.path.join(inc, "derived.h"), "w") as f:
+            f.write("#ifdef SIGN_ECC256\n"
+                    "#define HAVE_ECC 1\n"
+                    "#define ECC_CURVE 256\n"
+                    "#endif\n")
+        settings = os.path.join(d, "settings.h")
+        with open(settings, "w") as f:
+            f.write("#include <derived.h>\n")
+
+        out = drv.capture_macros("cc", f"-DSIGN_ECC256 -I{inc}",
+                                 settings_h=settings)
+        check("#define HAVE_ECC 1" in out,
+              "capture records macros the settings header derives")
+        check("#define ECC_CURVE 256" in out,
+              "capture keeps derived macro values")
+        check("#define SIGN_ECC256 1" in out,
+              "capture still records the -D tokens themselves")
+
+        out = drv.capture_macros("cc", f"-I{inc}", settings_h=settings)
+        check("HAVE_ECC" not in out,
+              "derived macro is absent when its -D gate is absent")
+
+        out = drv.capture_macros("cc", "-DSIGN_ECC256")
+        check("HAVE_ECC" not in out and "#define SIGN_ECC256 1" in out,
+              "no settings header means -D tokens only (back-compatible)")
+
+        # -I may also arrive out of band, and the separated '-I dir' spelling
+        # must work as well as '-Idir'.
+        out = drv.capture_macros("cc", "-DSIGN_ECC256", settings_h=settings,
+                                 include_dirs=[inc])
+        check("#define HAVE_ECC 1" in out, "--include-dir feeds the capture")
+        out = drv.capture_macros("cc", f"-DSIGN_ECC256 -I {inc}",
+                                 settings_h=settings)
+        check("#define HAVE_ECC 1" in out, "separated '-I dir' is forwarded")
+
+        # A capture that cannot preprocess must abort, never fall back to a
+        # partial dump: a silently truncated config is the failure mode this
+        # whole path exists to prevent.
+        with open(settings, "w") as f:
+            f.write("#include <no-such-header.h>\n")
+        try:
+            drv.capture_macros("cc", "", settings_h=settings)
+            check(False, "capture aborts when the settings header fails")
+        except SystemExit:
+            check(True, "capture aborts when the settings header fails")
+
+    # CFLAGS arrive already shell-processed, so the split must not re-lex them.
+    # shlex would eat the backslashes out of a Windows SDK path, which both
+    # corrupts the recorded value and defeats the absolute-path scrub that
+    # keeps host paths out of the SBOM.
+    win = r'-DPICO_SDK_PATH=C:\Users\ci\sdk -DHAVE_AES'
+    check(drv.split_cflags(win) == [r'-DPICO_SDK_PATH=C:\Users\ci\sdk',
+                                    '-DHAVE_AES'],
+          "cflags split preserves backslashes in Windows paths")
+    check(drv.is_absolute_path_token(r'C:\Users\ci\sdk'),
+          "a preserved Windows path is still recognised by the scrub")
+
     # Validator: a good CycloneDX passes with the right prefix; a wrong prefix
     # fails.
     with tempfile.TemporaryDirectory() as d:

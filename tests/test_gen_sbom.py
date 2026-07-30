@@ -1905,14 +1905,26 @@ class TestGenerateCdx(unittest.TestCase):
         self.assertEqual(comp['licenses'],
                          [{'license': {'id': 'GPL-2.0-only'}}])
 
+    def test_component_type_defaults_to_library(self):
+        doc = gs.generate_cdx(**self.BASE_KW)
+        self.assertEqual(doc['metadata']['component']['type'], 'library')
+
+    def test_component_type_is_selectable(self):
+        # wolfBoot is a bootloader, not a library. Reporting it as a library
+        # misfiles the product for anyone triaging by artifact class.
+        doc = gs.generate_cdx(component_type='firmware', **self.BASE_KW)
+        self.assertEqual(doc['metadata']['component']['type'], 'firmware')
+
     def test_build_properties_emitted(self):
         doc = gs.generate_cdx(**self.BASE_KW)
         props = doc['metadata']['component']['properties']
         names = {p['name']: p['value'] for p in props}
         self.assertEqual(names['wolfssl:build:HAVE_AESGCM'], '1')
-        # An empty define value is rendered as '1' so the SBOM
-        # consumer can't distinguish '#define X' from '#define X 1'.
-        self.assertEqual(names['wolfssl:build:NO_DES3'], '1')
+        # A valueless '#define X' keeps an empty value rather than being
+        # coerced to '1', so a consumer can tell it apart from '#define X 1'.
+        # Coercion misreported quantity-valued macros: an unset
+        # '#define WOLFBOOT_LOAD_ADDRESS' read as the address being 1.
+        self.assertEqual(names['wolfssl:build:NO_DES3'], '')
 
     def test_dependency_refs_match_components(self):
         # Critical invariant: every bom-ref in `dependencies` must
@@ -2088,6 +2100,19 @@ class TestGenerateSpdx(unittest.TestCase):
         enabled_deps=[],
         build_props=[('HAVE_AESGCM', '1'), ('NO_DES3', '')],
     )
+
+    def test_primary_package_purpose_mirrors_component_type(self):
+        # The CycloneDX and SPDX documents describe the same artifact, so the
+        # two must not disagree about what kind of thing it is.
+        pkg = lambda d: next(p for p in d['packages']
+                             if p['SPDXID'].startswith('SPDXRef-Package'))
+        self.assertEqual(
+            pkg(gs.generate_spdx(**self.BASE_KW))['primaryPackagePurpose'],
+            'LIBRARY')
+        self.assertEqual(
+            pkg(gs.generate_spdx(component_type='firmware',
+                                 **self.BASE_KW))['primaryPackagePurpose'],
+            'FIRMWARE')
 
     def test_top_level_shape(self):
         doc = gs.generate_spdx(**self.BASE_KW)

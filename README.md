@@ -101,7 +101,7 @@ system it ships) while all of them converge on the same engine.
 |---|---|---|
 | `sbom.am` | Autotools | Stages a private `make install`, discovers the installed library/binary, hashes it; config from `AM_CPPFLAGS`/`config.h`. |
 | `build/sbom.cmake` | CMake | Same shape, called as `wolfglass_add_sbom()` with `NAME`/`TARGETS`/`DEFS`. |
-| `build/sbom.mk` | Plain Make | Product sets `SBOM_NAME`/`SBOM_SRCS`/`SBOM_CFLAGS`, includes the fragment. |
+| `build/sbom.mk` | Plain Make | Product sets `SBOM_NAME`/`SBOM_SRCS`/`SBOM_CFLAGS` (plus `SBOM_SETTINGS_H` when a `user_settings.h` derives the config), includes the fragment. |
 | `frontends/compdb_sbom.py` | Any `compile_commands.json` | The universal fallback — TI CCS, MPLAB X, Renesas e2studio, or anything wrappable with `bear -- make ...`. |
 | `frontends/iar_sbom.py` | IAR Embedded Workbench `.ewp` | Parses the project XML directly — there's no build step to hook into. |
 | `frontends/zephyr_sbom.py` | Zephyr module | Reads `zephyr_library_sources(...)` since west owns the actual build. |
@@ -147,7 +147,7 @@ Typical integration for a new product:
 4. Provide the composition input (`--lib`, `--srcs-file`, or `--dep-wolfssl`).
 5. Run `sbom-driver` (directly, or through the Make/CMake/autotools fragment).
 6. Validate in CI with `validate_sbom.py` and the reusable
-   `sbom-reusable.yml` workflow.
+   `sbom-reusable.yml` workflow
 
 ## The bigger picture: SBOM is pillar one, not the whole toolkit
 
@@ -159,7 +159,7 @@ layout already reflects this even though only the first is fully built out:
 | SBOM | What's actually in this build? | `share/` | Built, vendored, in production use |
 | Advisory / VEX (CSAF 2.0) | Does CVE-X actually affect this product? | `central/` | Tooling exists (`gen-advisory`); run centrally per-CVE, not vendored into products |
 | Provenance (bomsh / OmniBOR) | Can we prove this artifact came from this source, this way? | `provenance/` | Verifier exists (`bomsh_verify.py`); the build-tracing wrapper itself is still planned |
-
+do
 The advisory and provenance pillars are deliberately **not** vendored into
 each product the way the SBOM engine is — they're meant to run centrally
 (advisories are authored once per CVE, not once per product) or opt-in per
@@ -177,4 +177,4 @@ not something to design against yet.
 
 For the full product-by-frontend matrix, the program plan, and maintainer-level
 notes on the current state of the repository, see [`docs/PLAN.md`](docs/PLAN.md),
-[`docs/TIERS.md`](docs/TIERS.md), and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+[`docs/TIERS.md`](docs/TIERS.md), and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).e sent us the sboms he generated, can we check the
