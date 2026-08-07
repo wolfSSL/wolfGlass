@@ -827,12 +827,11 @@ class TestDepMetaShape(unittest.TestCase):
         keys after they were intentionally removed."""
 
     def test_only_expected_deps_are_tracked(self):
-        # wolfssl is tracked so downstream wolfSSL-stack products (wolfSSH,
-        # wolfMQTT, ...) can declare it via --dep-wolfssl; openssl so the
-        # OpenSSL-compat products (wolfProvider, wolfEngine) can declare it via
-        # --dep-openssl; libz is wolfSSL's own optional linked dep.
+        # wolfssl / wolfcrypt so downstream products (wolfBoot, wolfSSH, ...)
+        # can declare the coat; openssl so the OpenSSL-compat products can
+        # declare it; libz is wolfSSL's own optional linked dep.
         self.assertEqual(set(gs.DEP_META.keys()),
-                         {'wolfssl', 'openssl', 'libz'})
+                         {'wolfssl', 'wolfcrypt', 'openssl', 'libz'})
 
     def test_wolfssl_dep_entry_describes_the_linked_artefact(self):
         wolfssl = gs.DEP_META['wolfssl']
@@ -854,6 +853,19 @@ class TestDepMetaShape(unittest.TestCase):
         self.assertEqual(
             wolfssl['cpe']('5.7.4'),
             'cpe:2.3:a:wolfssl:wolfssl:5.7.4:*:*:*:*:*:*:*')
+
+    def test_wolfcrypt_dep_entry_carries_registered_nvd_cpe(self):
+        wc = gs.DEP_META['wolfcrypt']
+        self.assertEqual(wc['name'], 'wolfcrypt')
+        self.assertIsNone(wc['pkgconfig'])
+        self.assertEqual(
+            wc['cpe']('5.9.1'),
+            'cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*')
+        # Resolvable github PURL for the wolfssl release that ships it,
+        # with a #wolfcrypt subpath so it does not collide with wolfssl.
+        self.assertEqual(
+            wc['purl']('5.9.1'),
+            'pkg:github/wolfssl/wolfssl@v5.9.1-stable#wolfcrypt')
 
     def test_openssl_dep_entry_describes_the_linked_artefact(self):
         openssl = gs.DEP_META['openssl']
@@ -973,7 +985,21 @@ class TestEnabledDepsCli(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--dep-libz', result.stdout)
         self.assertIn('--dep-wolfssl', result.stdout)
+        self.assertIn('--dep-wolfcrypt', result.stdout)
         self.assertIn('--dep-openssl', result.stdout)
+
+    def test_crypto_only_flag_is_accepted_and_constrained(self):
+        # The driver feature-detects this flag out of --help, so the help
+        # text is part of the contract.
+        result = self._run('--help')
+        self.assertIn('--crypto-only', result.stdout)
+        bad = self._run(
+            '--name', 'wolfssl', '--version', '0.0.0-test',
+            '--lib', '/dev/null', '--license-file', '/dev/null',
+            '--options-h', '/dev/null', '--cdx-out', '/dev/null',
+            '--spdx-out', '/dev/null', '--crypto-only', 'maybe')
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn('invalid choice', bad.stderr)
 
     def test_removed_flags_are_rejected(self):
         # Each of these was removed: --dep-falcon/--dep-libxmss/--dep-liblms
@@ -1869,6 +1895,17 @@ class TestCdxDepComponent(unittest.TestCase):
         self.assertEqual(
             comp['purl'], 'pkg:github/wolfssl/wolfssl@v5.9.1-stable')
 
+    def test_wolfcrypt_dep_component_carries_nvd_cpe(self):
+        _, comp = gs.cdx_dep_component(
+            'wolfboot', '2.9.0', 'wolfcrypt', {'wolfcrypt': '5.9.1'})
+        self.assertEqual(comp['name'], 'wolfcrypt')
+        self.assertEqual(comp['version'], '5.9.1')
+        self.assertEqual(
+            comp['cpe'], 'cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*')
+        self.assertEqual(
+            comp['purl'],
+            'pkg:github/wolfssl/wolfssl@v5.9.1-stable#wolfcrypt')
+
     def test_dep_version_override_wins_over_pkgconfig(self):
         # Embedded customers without pkg-config use --dep-version to
         # supply the linked dep version explicitly.  Confirms the
@@ -2743,6 +2780,202 @@ class TestBomshProvenanceVerify(unittest.TestCase):
             (fx.objects_dir / 'pack' / 'index.idx').write_bytes(b'pack idx')
             ok, messages = fx.verify()
             self.assertTrue(ok, f'verifier flagged non-blob files: {messages}')
+
+
+class TestProductCpePolicy(unittest.TestCase):
+    """Main-package CPEs come only from PRODUCT_CPE (registered + pending)."""
+
+    def test_registered_wolfssl_cpe(self):
+        self.assertEqual(
+            gs.product_cpe('wolfssl', '5.9.1'),
+            'cpe:2.3:a:wolfssl:wolfssl:5.9.1:*:*:*:*:*:*:*')
+        self.assertEqual(gs.product_cpe_status('wolfssl'), 'registered')
+
+    def test_registered_wolfcrypt_cpe(self):
+        self.assertEqual(
+            gs.product_cpe('wolfcrypt', '5.9.1'),
+            'cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*')
+
+    def test_wolfssh_uses_nvd_vendor_wolfssh(self):
+        # NVD registers wolfSSH under vendor wolfssh, not wolfssl.
+        self.assertEqual(
+            gs.product_cpe('wolfssh', '1.4.20'),
+            'cpe:2.3:a:wolfssh:wolfssh:1.4.20:*:*:*:*:*:*:*')
+
+    def test_registered_product_has_no_requested_cpe(self):
+        self.assertIsNone(gs.product_cpe_requested('wolfssl', '5.9.1'))
+
+    def test_wolfboot_pending_cpe_is_not_published(self):
+        # NVD has no wolfBoot entry, so nothing may be published as a `cpe`:
+        # a scanner cannot tell an unlisted CPE from a listed one with no
+        # advisories. The intended string is recorded separately so the SBOM
+        # and the NIST submission stay byte-identical.
+        self.assertEqual(gs.product_cpe_status('wolfboot'), 'pending')
+        self.assertIsNone(gs.product_cpe('wolfboot', '2.9.0'))
+        self.assertEqual(
+            gs.product_cpe_requested('wolfboot', '2.9.0'),
+            'cpe:2.3:a:wolfssl:wolfboot:2.9.0:*:*:*:*:*:*:*')
+
+    def test_unknown_product_omits_cpe(self):
+        self.assertIsNone(gs.product_cpe('wolftpm', '3.0.0'))
+        self.assertIsNone(gs.product_cpe_requested('wolftpm', '3.0.0'))
+        self.assertIsNone(gs.product_cpe_status('wolftpm'))
+
+
+class TestResolveCryptoOnly(unittest.TestCase):
+    """--crypto-only auto reads the macro; explicit values win."""
+
+    def test_auto_reads_captured_macro(self):
+        self.assertEqual(
+            gs.resolve_crypto_only('auto', [('WOLFCRYPT_ONLY', ''),
+                                            ('HAVE_ECC', '1')]),
+            (True, 'captured'))
+
+    def test_auto_without_macro_is_not_crypto_only(self):
+        self.assertEqual(
+            gs.resolve_crypto_only('auto', [('HAVE_ECC', '1')]),
+            (False, 'captured'))
+
+    def test_auto_without_any_capture_is_unknown(self):
+        # A --source-only front end (Zephyr) captures no macros, so nothing
+        # in the inputs can settle the question either way.
+        self.assertEqual(gs.resolve_crypto_only('auto', []), (False, 'unknown'))
+
+    def test_explicit_value_overrides_the_macro(self):
+        self.assertEqual(
+            gs.resolve_crypto_only('no', [('WOLFCRYPT_ONLY', '')]),
+            (False, 'declared'))
+        self.assertEqual(gs.resolve_crypto_only('yes', []), (True, 'declared'))
+
+
+class TestWolfbootCoatContract(unittest.TestCase):
+    """Contract for a wolfBoot-shaped SBOM (ask #1 definition of done)."""
+
+    BASE_KW = dict(
+        name='wolfboot',
+        version='2.9.0',
+        supplier='wolfSSL Inc.',
+        license_id='GPL-3.0-or-later',
+        license_text=None,
+        lib_hash='b' * 64,
+        timestamp='2024-01-01T00:00:00Z',
+        year=2024,
+        serial='00000000-0000-0000-0000-000000000002',
+        enabled_deps=['wolfssl', 'wolfcrypt'],
+        build_props=[('TARGET_stm32u5', '1'), ('WOLFBOOT_SIGN_ECC256', '1')],
+        dep_version_overrides={'wolfssl': '5.9.1', 'wolfcrypt': '5.9.1'},
+        component_type='firmware',
+    )
+
+    def test_cdx_main_component_records_pending_cpe_without_claiming_it(self):
+        doc = gs.generate_cdx(**self.BASE_KW)
+        main = doc['metadata']['component']
+        self.assertEqual(main['type'], 'firmware')
+        self.assertNotIn('cpe', main)
+        self.assertEqual(main['purl'], 'pkg:github/wolfssl/wolfboot@v2.9.0')
+        props = {p['name']: p['value'] for p in main['properties']}
+        self.assertEqual(props.get('wolfssl:sbom:cpe-status'), 'pending')
+        self.assertEqual(props.get('wolfssl:sbom:cpe-requested'),
+                         'cpe:2.3:a:wolfssl:wolfboot:2.9.0:*:*:*:*:*:*:*')
+
+    def test_cdx_nests_wolfcrypt_inside_wolfssl(self):
+        doc = gs.generate_cdx(**self.BASE_KW)
+        # wolfssl stays top-level: it is the only one of the pair NVD maps
+        # advisories to, so burying it would cost every CVE match.
+        top = {c['name']: c for c in doc['components']}
+        self.assertEqual(set(top), {'wolfssl'})
+        self.assertEqual(
+            top['wolfssl']['cpe'],
+            'cpe:2.3:a:wolfssl:wolfssl:5.9.1:*:*:*:*:*:*:*')
+        self.assertEqual(
+            top['wolfssl']['purl'],
+            'pkg:github/wolfssl/wolfssl@v5.9.1-stable')
+
+        nested = {c['name']: c for c in top['wolfssl']['components']}
+        self.assertEqual(set(nested), {'wolfcrypt'})
+        self.assertEqual(
+            nested['wolfcrypt']['cpe'],
+            'cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*')
+
+    def test_cdx_dependency_edges_follow_the_nesting(self):
+        doc = gs.generate_cdx(**self.BASE_KW)
+        main = doc['metadata']['component']
+        wolfssl = doc['components'][0]
+        wolfcrypt = wolfssl['components'][0]
+        deps = {d['ref']: d.get('dependsOn', []) for d in doc['dependencies']}
+        self.assertEqual(deps[main['bom-ref']], [wolfssl['bom-ref']])
+        self.assertEqual(deps[wolfssl['bom-ref']], [wolfcrypt['bom-ref']])
+        self.assertEqual(deps[wolfcrypt['bom-ref']], [])
+
+    def test_cdx_records_the_wolfssl_subset(self):
+        doc = gs.generate_cdx(**dict(self.BASE_KW,
+                                     wolfssl_subset='wolfcrypt-only',
+                                     subset_basis='captured'))
+        props = {p['name']: p['value']
+                 for p in doc['metadata']['component']['properties']}
+        self.assertEqual(props['wolfssl:sbom:wolfssl-subset'],
+                         'wolfcrypt-only')
+        self.assertEqual(props['wolfssl:sbom:wolfssl-subset-basis'],
+                         'captured')
+
+    def test_cdx_omits_subset_properties_when_not_crypto_only(self):
+        doc = gs.generate_cdx(**self.BASE_KW)
+        names = {p['name']
+                 for p in doc['metadata']['component']['properties']}
+        self.assertNotIn('wolfssl:sbom:wolfssl-subset', names)
+
+    def test_spdx_pending_product_has_no_cpe_external_ref(self):
+        doc = gs.generate_spdx(**dict(
+            (k, v) for k, v in self.BASE_KW.items() if k != 'serial'),
+            doc_ns_uuid='00000000-0000-0000-0000-000000000003')
+        main = doc['packages'][0]
+        kinds = {r['referenceType'] for r in main['externalRefs']}
+        self.assertNotIn('cpe23Type', kinds)
+        comments = {a['comment'] for a in main['annotations']}
+        self.assertIn('wolfssl:sbom:cpe-status=pending', comments)
+        self.assertIn(
+            'wolfssl:sbom:cpe-requested='
+            'cpe:2.3:a:wolfssl:wolfboot:2.9.0:*:*:*:*:*:*:*', comments)
+
+    def test_spdx_expresses_containment_not_a_second_dependency(self):
+        doc = gs.generate_spdx(**dict(
+            (k, v) for k, v in self.BASE_KW.items() if k != 'serial'),
+            doc_ns_uuid='00000000-0000-0000-0000-000000000003')
+        rels = {(r['spdxElementId'], r['relatedSpdxElement']):
+                r['relationshipType'] for r in doc['relationships']}
+        self.assertEqual(
+            rels[('SPDXRef-Package-wolfboot', 'SPDXRef-Package-wolfssl')],
+            'DEPENDS_ON')
+        self.assertEqual(
+            rels[('SPDXRef-Package-wolfssl', 'SPDXRef-Package-wolfcrypt')],
+            'CONTAINS')
+
+    def test_spdx_wolfssl_own_sbom_contains_its_wolfcrypt(self):
+        # wolfSSL ships wolfCrypt; it does not depend on it.
+        doc = gs.generate_spdx(**dict(
+            ((k, v) for k, v in self.BASE_KW.items() if k != 'serial'),
+            name='wolfssl', version='5.9.1', enabled_deps=['wolfcrypt'],
+            component_type='library'),
+            doc_ns_uuid='00000000-0000-0000-0000-000000000004')
+        rels = {(r['spdxElementId'], r['relatedSpdxElement']):
+                r['relationshipType'] for r in doc['relationships']}
+        self.assertEqual(
+            rels[('SPDXRef-Package-wolfssl', 'SPDXRef-Package-wolfcrypt')],
+            'CONTAINS')
+
+    def test_wolfssl_own_sbom_keeps_wolfcrypt_top_level(self):
+        # wolfSSL's own SBOM records no wolfssl dependency, so there is
+        # nothing to nest into; wolfcrypt must stay a top-level component or
+        # components[] goes empty again.
+        doc = gs.generate_cdx(**dict(
+            self.BASE_KW, name='wolfssl', version='5.9.1',
+            enabled_deps=['wolfcrypt'], component_type='library'))
+        self.assertEqual([c['name'] for c in doc['components']], ['wolfcrypt'])
+
+    def test_tool_version_is_1_6(self):
+        doc = gs.generate_cdx(**self.BASE_KW)
+        tools = doc['metadata']['tools']['components']
+        self.assertEqual(tools[0]['version'], '1.6')
 
 
 if __name__ == '__main__':

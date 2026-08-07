@@ -161,6 +161,31 @@ def unit_tests():
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         check(rc != 0, "validator rejects a wrong name prefix")
 
+        # wolfcrypt ships nested inside the wolfssl component, so a
+        # --require-dep-version check that read only the top level would call
+        # it missing.
+        nested = os.path.join(d, "n.cdx.json")
+        with open(nested, "w") as f:
+            json.dump({
+                "bomFormat": "CycloneDX", "specVersion": "1.6",
+                "metadata": {"component": {"name": "wolfboot",
+                                           "version": "2.9.0",
+                                           "properties": [{"a": "b"}]}},
+                "components": [{
+                    "name": "wolfssl", "version": "5.9.1",
+                    "cpe": "cpe:2.3:a:wolfssl:wolfssl:5.9.1:*:*:*:*:*:*:*",
+                    "components": [{
+                        "name": "wolfcrypt", "version": "5.9.1",
+                        "cpe": "cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*",
+                    }],
+                }],
+            }, f)
+        rc = subprocess.call([sys.executable, VALIDATE,
+                              "--require-dep-version", "wolfssl",
+                              "--require-dep-version", "wolfcrypt", nested],
+                             stdout=subprocess.DEVNULL)
+        check(rc == 0, "validator finds a nested dependency component")
+
 
 def find_gen_sbom(explicit):
     if explicit and os.path.isfile(explicit):
