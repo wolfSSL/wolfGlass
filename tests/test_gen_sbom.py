@@ -2805,16 +2805,14 @@ class TestProductCpePolicy(unittest.TestCase):
     def test_registered_product_has_no_requested_cpe(self):
         self.assertIsNone(gs.product_cpe_requested('wolfssl', '5.9.1'))
 
-    def test_wolfboot_pending_cpe_is_not_published(self):
-        # NVD has no wolfBoot entry, so nothing may be published as a `cpe`:
-        # a scanner cannot tell an unlisted CPE from a listed one with no
-        # advisories. The intended string is recorded separately so the SBOM
-        # and the NIST submission stay byte-identical.
-        self.assertEqual(gs.product_cpe_status('wolfboot'), 'pending')
-        self.assertIsNone(gs.product_cpe('wolfboot', '2.9.0'))
+    def test_wolfboot_registered_cpe_is_published(self):
+        # NVD published wolfssl:wolfboot on 2026-08-10; the main package
+        # must emit the CPE so CPE-driven scanners can match it.
+        self.assertEqual(gs.product_cpe_status('wolfboot'), 'registered')
         self.assertEqual(
-            gs.product_cpe_requested('wolfboot', '2.9.0'),
+            gs.product_cpe('wolfboot', '2.9.0'),
             'cpe:2.3:a:wolfssl:wolfboot:2.9.0:*:*:*:*:*:*:*')
+        self.assertIsNone(gs.product_cpe_requested('wolfboot', '2.9.0'))
 
     def test_unknown_product_omits_cpe(self):
         self.assertIsNone(gs.product_cpe('wolftpm', '3.0.0'))
@@ -2867,16 +2865,17 @@ class TestWolfbootCoatContract(unittest.TestCase):
         component_type='firmware',
     )
 
-    def test_cdx_main_component_records_pending_cpe_without_claiming_it(self):
+    def test_cdx_main_component_emits_registered_wolfboot_cpe(self):
         doc = gs.generate_cdx(**self.BASE_KW)
         main = doc['metadata']['component']
         self.assertEqual(main['type'], 'firmware')
-        self.assertNotIn('cpe', main)
+        self.assertEqual(
+            main['cpe'],
+            'cpe:2.3:a:wolfssl:wolfboot:2.9.0:*:*:*:*:*:*:*')
         self.assertEqual(main['purl'], 'pkg:github/wolfssl/wolfboot@v2.9.0')
         props = {p['name']: p['value'] for p in main['properties']}
-        self.assertEqual(props.get('wolfssl:sbom:cpe-status'), 'pending')
-        self.assertEqual(props.get('wolfssl:sbom:cpe-requested'),
-                         'cpe:2.3:a:wolfssl:wolfboot:2.9.0:*:*:*:*:*:*:*')
+        self.assertNotIn('wolfssl:sbom:cpe-status', props)
+        self.assertNotIn('wolfssl:sbom:cpe-requested', props)
 
     def test_cdx_nests_wolfcrypt_inside_wolfssl(self):
         doc = gs.generate_cdx(**self.BASE_KW)
@@ -2924,18 +2923,19 @@ class TestWolfbootCoatContract(unittest.TestCase):
                  for p in doc['metadata']['component']['properties']}
         self.assertNotIn('wolfssl:sbom:wolfssl-subset', names)
 
-    def test_spdx_pending_product_has_no_cpe_external_ref(self):
+    def test_spdx_registered_product_has_cpe_external_ref(self):
         doc = gs.generate_spdx(**dict(
             (k, v) for k, v in self.BASE_KW.items() if k != 'serial'),
             doc_ns_uuid='00000000-0000-0000-0000-000000000003')
         main = doc['packages'][0]
-        kinds = {r['referenceType'] for r in main['externalRefs']}
-        self.assertNotIn('cpe23Type', kinds)
+        refs = {r['referenceType']: r['referenceLocator']
+                for r in main['externalRefs']}
+        self.assertEqual(
+            refs['cpe23Type'],
+            'cpe:2.3:a:wolfssl:wolfboot:2.9.0:*:*:*:*:*:*:*')
         comments = {a['comment'] for a in main['annotations']}
-        self.assertIn('wolfssl:sbom:cpe-status=pending', comments)
-        self.assertIn(
-            'wolfssl:sbom:cpe-requested='
-            'cpe:2.3:a:wolfssl:wolfboot:2.9.0:*:*:*:*:*:*:*', comments)
+        self.assertTrue(all('cpe-status=pending' not in c for c in comments))
+        self.assertTrue(all('cpe-requested=' not in c for c in comments))
 
     def test_spdx_expresses_containment_not_a_second_dependency(self):
         doc = gs.generate_spdx(**dict(
@@ -2972,10 +2972,10 @@ class TestWolfbootCoatContract(unittest.TestCase):
             enabled_deps=['wolfcrypt'], component_type='library'))
         self.assertEqual([c['name'] for c in doc['components']], ['wolfcrypt'])
 
-    def test_tool_version_is_1_6(self):
+    def test_tool_version_is_1_7(self):
         doc = gs.generate_cdx(**self.BASE_KW)
         tools = doc['metadata']['tools']['components']
-        self.assertEqual(tools[0]['version'], '1.6')
+        self.assertEqual(tools[0]['version'], '1.7')
 
 
 if __name__ == '__main__':
