@@ -3028,3 +3028,38 @@ class TestWolfcryptVersionInheritance(unittest.TestCase):
         self.assertEqual(
             comp['cpe'], 'cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*')
         self.assertEqual(len(comp['cpe'].split(':')), 13)
+class TestEnabledDepsValidation(unittest.TestCase):
+    """--dep-* must be exactly yes or no.
+
+    Anything else was previously treated as 'no', so a fragment wiring
+    --dep-wolfssl=$(HAVE_WOLFSSL) where the variable expands to 1/true/on/Y
+    dropped a CVE-bearing component with no diagnostic.
+    """
+
+    def test_yes_enables_and_no_disables(self):
+        self.assertEqual(
+            gs._enabled_deps([('wolfssl', '--dep-wolfssl', 'yes'),
+                              ('libz', '--dep-libz', 'no')]),
+            ['wolfssl'])
+
+    def test_case_and_surrounding_space_tolerated(self):
+        self.assertEqual(
+            gs._enabled_deps([('wolfssl', '--dep-wolfssl', ' YES ')]),
+            ['wolfssl'])
+
+    def test_truthy_lookalikes_are_rejected_not_silently_dropped(self):
+        for bogus in ('1', 'true', 'on', 'Y', 'enabled'):
+            with self.subTest(value=bogus):
+                with self.assertRaises(SystemExit):
+                    gs._enabled_deps([('wolfssl', '--dep-wolfssl', bogus)])
+
+    def test_empty_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            gs._enabled_deps([('wolfssl', '--dep-wolfssl', '')])
+
+    def test_order_follows_declaration_not_input(self):
+        self.assertEqual(
+            gs._enabled_deps([('wolfssl', '--dep-wolfssl', 'yes'),
+                              ('wolfcrypt', '--dep-wolfcrypt', 'yes'),
+                              ('libz', '--dep-libz', 'yes')]),
+            ['wolfssl', 'wolfcrypt', 'libz'])
