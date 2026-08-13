@@ -164,8 +164,12 @@ class TestCpePurl(unittest.TestCase):
                          'cpe:2.3:a:wolfssl:wolfssl:5.9.1:*:*:*:*:*:*:*')
 
     def test_purl(self):
+        # Namespace is lowercased (the purl spec requires it for pkg:github) and
+        # the version is the real release tag: refs/tags/v5.9.1-stable exists in
+        # wolfSSL/wolfssl, refs/tags/v5.9.1 does not, so a bare version produces
+        # a PURL that resolves to nothing.
         self.assertEqual(ga.purl_for('wolfSSL', '5.9.1'),
-                         'pkg:github/wolfSSL/wolfssl@v5.9.1')
+                         'pkg:github/wolfssl/wolfssl@v5.9.1-stable')
 
 
 class TestBestCvss(unittest.TestCase):
