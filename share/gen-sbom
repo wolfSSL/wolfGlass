@@ -1435,6 +1435,34 @@ def _resolve_dep_versions(enabled_deps, overrides):
     return overrides
 
 
+def _inherit_wolfcrypt_version(enabled_deps, overrides, name, version):
+    """Give wolfcrypt a version so its CPE and PURL are not dropped.
+
+    wolfcrypt has no pkg-config file of its own, so `dep_version` can never
+    resolve it.  Prefer an explicit `--dep-version wolfcrypt=`, else the
+    wolfssl dependency's version, else (for wolfSSL's own SBOM) the package
+    version.
+
+    MUST be called AFTER `_resolve_dep_versions`.  The wolfssl version
+    normally arrives from pkg-config rather than from `--dep-version`, so
+    inheriting before the resolve step only ever saw an explicit override: a
+    downstream embedder such as wolfBoot that did not pass
+    `--dep-version wolfssl=` emitted a wolfcrypt component with no version,
+    no purl and no cpe, and still exited 0.
+
+    Tests the value rather than the key, because `_resolve_dep_versions`
+    caches a None for every dep pkg-config cannot resolve, so by this point
+    'wolfcrypt' is always present in `overrides`.
+    """
+    if 'wolfcrypt' not in enabled_deps or overrides.get('wolfcrypt'):
+        return overrides
+    if overrides.get('wolfssl'):
+        overrides['wolfcrypt'] = overrides['wolfssl']
+    elif name.lower() == 'wolfssl':
+        overrides['wolfcrypt'] = version
+    return overrides
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Generate CycloneDX and SPDX SBOMs for wolfssl. '
@@ -1628,18 +1656,12 @@ def main():
         if flag.lower() == 'yes'
     ]
     dep_version_overrides = _parse_dep_version_overrides(args.dep_version)
-    # wolfcrypt has no pkg-config.  Inherit a version so the CPE/PURL are
-    # not dropped: prefer an explicit --dep-version wolfcrypt=, else the
-    # wolfssl dep version, else (for wolfSSL's own SBOM) the package version.
-    if 'wolfcrypt' in enabled_deps and 'wolfcrypt' not in dep_version_overrides:
-        if dep_version_overrides.get('wolfssl'):
-            dep_version_overrides['wolfcrypt'] = dep_version_overrides['wolfssl']
-        elif args.name.lower() == 'wolfssl':
-            dep_version_overrides['wolfcrypt'] = args.version
     # Resolve each enabled dependency's version once, here, and feed the
     # result to both the CDX and SPDX emitters via the overrides map (see
     # _resolve_dep_versions for the once-per-dep pkg-config rationale).
     _resolve_dep_versions(enabled_deps, dep_version_overrides)
+    _inherit_wolfcrypt_version(enabled_deps, dep_version_overrides,
+                               args.name, args.version)
 
     if args.license_override:
         license_id = args.license_override

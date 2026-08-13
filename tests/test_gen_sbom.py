@@ -2980,3 +2980,51 @@ class TestWolfbootCoatContract(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class TestWolfcryptVersionInheritance(unittest.TestCase):
+    """wolfcrypt has no pkg-config, so its version is inherited.
+
+    Regression: the inheritance ran BEFORE _resolve_dep_versions, so it only
+    ever saw versions passed explicitly via --dep-version.  A downstream
+    embedder (wolfBoot) whose wolfssl version came from pkg-config got a
+    wolfcrypt component with no version, no purl and no cpe, and exit 0.
+    """
+
+    def test_inherits_wolfssl_version_resolved_by_pkgconfig(self):
+        # State as _resolve_dep_versions leaves it: wolfssl resolved from
+        # pkg-config, wolfcrypt cached as None because it has no .pc file.
+        overrides = {'wolfssl': '5.9.1', 'wolfcrypt': None}
+        gs._inherit_wolfcrypt_version(
+            ['wolfssl', 'wolfcrypt'], overrides, 'wolfboot', '2.9.0')
+        self.assertEqual(overrides['wolfcrypt'], '5.9.1')
+
+    def test_explicit_override_is_not_clobbered(self):
+        overrides = {'wolfssl': '5.9.1', 'wolfcrypt': '5.8.0'}
+        gs._inherit_wolfcrypt_version(
+            ['wolfssl', 'wolfcrypt'], overrides, 'wolfboot', '2.9.0')
+        self.assertEqual(overrides['wolfcrypt'], '5.8.0')
+
+    def test_wolfssl_own_sbom_falls_back_to_package_version(self):
+        overrides = {'wolfcrypt': None}
+        gs._inherit_wolfcrypt_version(
+            ['wolfcrypt'], overrides, 'wolfssl', '5.9.1')
+        self.assertEqual(overrides['wolfcrypt'], '5.9.1')
+
+    def test_noop_when_wolfcrypt_not_enabled(self):
+        overrides = {'wolfssl': '5.9.1'}
+        gs._inherit_wolfcrypt_version(
+            ['wolfssl'], overrides, 'wolfboot', '2.9.0')
+        self.assertNotIn('wolfcrypt', overrides)
+
+    def test_inherited_version_yields_a_resolvable_cpe(self):
+        # End state that matters: the CPE 2.3 formatted string is well formed
+        # (13 colon-separated fields) and carries the inherited version.
+        overrides = {'wolfssl': '5.9.1', 'wolfcrypt': None}
+        gs._inherit_wolfcrypt_version(
+            ['wolfssl', 'wolfcrypt'], overrides, 'wolfboot', '2.9.0')
+        _ref, comp = gs.cdx_dep_component(
+            'wolfcrypt', overrides['wolfcrypt'], 'wolfcrypt', overrides)
+        self.assertEqual(
+            comp['cpe'], 'cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*')
+        self.assertEqual(len(comp['cpe'].split(':')), 13)
