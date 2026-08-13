@@ -21,7 +21,7 @@ jobs:
           python-version: '3.x'
 
       - name: Install unit-test dependencies
-        run: python -m pip install --user pcpp
+        run: python -m pip install --user pcpp spdx-tools
 
       - name: Syntax-check all Python
         run: |
