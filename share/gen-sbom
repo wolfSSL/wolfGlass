@@ -25,6 +25,10 @@ from datetime import datetime, timezone
 # shapes because dropping --dep-liboqs did not bump it, leaving vendored
 # copies indistinguishable by the only identifier the SBOM records.
 #
+# 1.8  CPE and PURL identifiers drop `+` build metadata (OpenSSL
+#      BUILD_METADATA, PEP 440 local versions). A raw `+` is not legal
+#      in CPE 2.3 and does not match an upstream git tag. version /
+#      versionInfo still records the full string.
 # 1.7  wolfBoot CPE is registered in the NVD Official CPE Dictionary
 #      (published 2026-08-10). PRODUCT_CPE status flips to registered so
 #      the main package emits `cpe` and the pending properties stop.
@@ -50,7 +54,7 @@ from datetime import datetime, timezone
 #      -only/-or-later distinction cannot be inferred.
 # 1.2  Dropped --dep-liboqs (unversioned; see above).
 GEN_SBOM_TOOL_NAME = 'wolfssl-sbom-gen'
-GEN_SBOM_VERSION = '1.7'
+GEN_SBOM_VERSION = '1.8'
 
 # Placeholder recorded in the component checksum fields when the operator
 # passes --no-artifact-hash: a build (ROM image, HSM firmware, binary-only
@@ -129,9 +133,23 @@ def github_purl(namespace, repo, tag):
     return f'pkg:github/{namespace.lower()}/{repo.lower()}@{tag}'
 
 
+def identifier_version(version):
+    """Return the version used in CPE 2.3 and PURL identifiers.
+
+    OpenSSL BUILD_METADATA and PEP 440 local versions append `+...`.
+    A raw `+` is not a legal CPE 2.3 version character, and the suffix
+    is not an upstream git tag, so NVD / OSV cannot match it. Keep the
+    full string in version / versionInfo; use this for identifiers.
+    """
+    if not version:
+        return version
+    return version.split('+', 1)[0]
+
+
 def wolfssl_project_purl(name, version):
     """Canonical pkg:github PURL for a wolfSSL-stack project."""
-    return github_purl('wolfSSL', name, github_release_tag(name, version))
+    return github_purl(
+        'wolfSSL', name, github_release_tag(name, identifier_version(version)))
 
 
 # Official CPE 2.3 vendor:product pairs.  Main-package CPEs are emitted only
@@ -165,8 +183,9 @@ PRODUCT_CPE = {
 
 
 def _product_cpe_string(meta, version):
+    ident = identifier_version(version)
     return (
-        f"cpe:2.3:a:{meta['vendor']}:{meta['product']}:{version}:*:*:*:*:*:*:*"
+        f"cpe:2.3:a:{meta['vendor']}:{meta['product']}:{ident}:*:*:*:*:*:*:*"
     )
 
 
@@ -988,12 +1007,13 @@ def cdx_dep_component(name, pkg_version, key, dep_version_overrides=None):
         'externalReferences': [{'type': 'vcs', 'url': meta['download']}],
     }
     if version:
+        ident = identifier_version(version)
         comp['version'] = version
-        comp['purl'] = meta['purl'](version)
+        comp['purl'] = meta['purl'](ident)
         # Both identifiers are version-bearing, so neither can be emitted
         # without a resolved version: a CPE with an empty version field
         # matches every release of the dependency in an NVD scan.
-        comp['cpe'] = meta['cpe'](version)
+        comp['cpe'] = meta['cpe'](ident)
     else:
         print(f"WARNING: version unknown for {meta['name']}; "
               "omitting version, purl and cpe", file=sys.stderr)
@@ -1017,16 +1037,17 @@ def spdx_dep_package(key, dep_version_overrides=None):
         'copyrightText': 'NOASSERTION',
     }
     if version:
+        ident = identifier_version(version)
         pkg['externalRefs'] = [
             {
                 'referenceCategory': 'SECURITY',
                 'referenceType': 'cpe23Type',
-                'referenceLocator': meta['cpe'](version),
+                'referenceLocator': meta['cpe'](ident),
             },
             {
                 'referenceCategory': 'PACKAGE-MANAGER',
                 'referenceType': 'purl',
-                'referenceLocator': meta['purl'](version),
+                'referenceLocator': meta['purl'](ident),
             },
         ]
     return spdx_id, pkg

@@ -883,6 +883,35 @@ class TestDepMetaShape(unittest.TestCase):
             openssl['cpe']('3.5.0'),
             'cpe:2.3:a:openssl:openssl:3.5.0:*:*:*:*:*:*:*')
 
+    def test_identifier_version_strips_plus_build_metadata(self):
+        self.assertEqual(gs.identifier_version('3.5.4'), '3.5.4')
+        self.assertEqual(
+            gs.identifier_version('3.5.4+wolfProvider-nonfips'), '3.5.4')
+        self.assertIsNone(gs.identifier_version(None))
+        self.assertEqual(gs.identifier_version(''), '')
+
+    def test_openssl_dep_cpe_and_purl_drop_build_metadata(self):
+        # wolfProvider patches OpenSSL BUILD_METADATA, so openssl version
+        # prints 3.5.4+wolfProvider-nonfips. CPE 2.3 rejects a raw `+`, and
+        # the git tag is openssl-3.5.4. versionInfo keeps the local string.
+        dirty = '3.5.4+wolfProvider-nonfips'
+        _, cdx = gs.cdx_dep_component(
+            'wolfprovider', '1.2.1', 'openssl', {'openssl': dirty})
+        self.assertEqual(cdx['version'], dirty)
+        self.assertEqual(
+            cdx['cpe'], 'cpe:2.3:a:openssl:openssl:3.5.4:*:*:*:*:*:*:*')
+        self.assertEqual(
+            cdx['purl'], 'pkg:github/openssl/openssl@openssl-3.5.4')
+        _, spdx = gs.spdx_dep_package('openssl', {'openssl': dirty})
+        self.assertEqual(spdx['versionInfo'], dirty)
+        locators = {r['referenceType']: r['referenceLocator']
+                    for r in spdx['externalRefs']}
+        self.assertEqual(
+            locators['cpe23Type'],
+            'cpe:2.3:a:openssl:openssl:3.5.4:*:*:*:*:*:*:*')
+        self.assertEqual(
+            locators['purl'], 'pkg:github/openssl/openssl@openssl-3.5.4')
+
     def test_every_dep_entry_carries_both_identifiers(self):
         # A dep with only one identifier is invisible to half the scanner
         # population: PURL serves OSV / Trivy / Dependency-Track, CPE serves
@@ -2972,10 +3001,10 @@ class TestWolfbootCoatContract(unittest.TestCase):
             enabled_deps=['wolfcrypt'], component_type='library'))
         self.assertEqual([c['name'] for c in doc['components']], ['wolfcrypt'])
 
-    def test_tool_version_is_1_7(self):
+    def test_tool_version_is_1_8(self):
         doc = gs.generate_cdx(**self.BASE_KW)
         tools = doc['metadata']['tools']['components']
-        self.assertEqual(tools[0]['version'], '1.7')
+        self.assertEqual(tools[0]['version'], '1.8')
 
 
 if __name__ == '__main__':
