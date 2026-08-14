@@ -49,18 +49,33 @@ def entry_tokens(entry):
 
 
 def extract_defines(tokens):
-    defs = []
+    """Net -D macros for one compile command, honouring a later -U that cancels
+    an earlier -D of the same name (the compiler applies them in order, so a
+    macro undefined on the command line was not compiled in)."""
+    active = {}   # macro name -> full 'NAME' or 'NAME=VALUE' token; last -D wins
     i = 0
     while i < len(tokens):
         t = tokens[i]
         if t == '-D' and i + 1 < len(tokens):
-            defs.append(tokens[i + 1])
+            d = tokens[i + 1]
+            active[d.split('=', 1)[0]] = d
             i += 2
             continue
         if t.startswith('-D'):
-            defs.append(t[2:])
+            d = t[2:]
+            active[d.split('=', 1)[0]] = d
+            i += 1
+            continue
+        if t == '-U' and i + 1 < len(tokens):
+            active.pop(tokens[i + 1], None)
+            i += 2
+            continue
+        if t.startswith('-U'):
+            active.pop(t[2:], None)
+            i += 1
+            continue
         i += 1
-    return defs
+    return list(active.values())
 
 
 def main():
@@ -108,6 +123,11 @@ def main():
     inc = [re.compile(p) for p in args.include]
     exc = [re.compile(p) for p in args.exclude]
 
+    # When --root is given, only hash sources inside it; a compile_commands.json
+    # is untrusted input, so a crafted entry naming an absolute path outside the
+    # product must not pull an unrelated file (and its path) into the SBOM.
+    root_abs = os.path.realpath(args.root) if args.root else None
+
     srcs, defines, seen = [], set(), set()
     for entry in db:
         fpath = entry.get('file')
@@ -119,6 +139,12 @@ def main():
         fpath = os.path.normpath(fpath)
         if not fpath.lower().endswith(SRC_EXTS):
             continue
+        if root_abs:
+            real = os.path.realpath(fpath)
+            if real != root_abs and not real.startswith(root_abs + os.sep):
+                sys.stderr.write(
+                    f"WARNING: skipping source outside --root: {fpath}\n")
+                continue
         if inc and not any(r.search(fpath) for r in inc):
             continue
         if exc and any(r.search(fpath) for r in exc):

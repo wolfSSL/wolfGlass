@@ -86,6 +86,11 @@ def scrub_defines(text):
 
 def read_version(version_file, version_macro):
     """Read a version string from a header, e.g. LIBWOLFBOOT_VERSION_STRING."""
+    # An empty macro would make re.escape('') a zero-width prefix, so the pattern
+    # degrades to the first quoted string in the header (a copyright year, an
+    # unrelated define) -- return "" rather than a silently wrong version.
+    if not version_macro:
+        return ""
     if not version_file or not os.path.isfile(version_file):
         return ""
     pat = re.compile(re.escape(version_macro) + r'\s*"([^"]*)"')

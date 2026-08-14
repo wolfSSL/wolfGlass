@@ -8,6 +8,10 @@ on:
     branches: [master]
   pull_request:
 
+# This workflow only reads the repo and runs tests; no write access needed.
+permissions:
+  contents: read
+
 jobs:
   selftest:
     runs-on: ubuntu-latest
@@ -36,10 +40,14 @@ jobs:
             provenance/bomsh_verify.py \
             tools/wolfglass-sync \
             tests/test_gen_sbom.py \
-            tests/test_sbom.py
+            tests/test_sbom.py \
+            tests/test_low_findings.py
 
       - name: Run generator unit tests
         run: python -m unittest tests/test_gen_sbom.py
+
+      - name: Run low-findings tests
+        run: python -m unittest tests/test_low_findings.py
 
       - name: Run self-test
         run: python tests/test_sbom.py
