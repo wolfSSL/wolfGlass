@@ -10,7 +10,7 @@
 # build-time dependency on a separate wolfSSL checkout.
 #
 # ---------------------------------------------------------------------------
-# The including Makefile.am MUST set, before `include scripts/sbom.am`:
+# The including Makefile.am MUST set, before `include tools/sbom/sbom.am`:
 #   SBOM_PKGNAME        Product name recorded in the SBOM (e.g. wolfssh).  Drives
 #                       the output filenames and gen-sbom --name.
 #   SBOM_LICENSE_FILE   Path to the product's LICENSING file
@@ -102,7 +102,7 @@ SBOM_LIB_GLOBS = \
 
 # Automake requires CLEANFILES to be initialised with `=` before `+=`; the
 # including Makefile.am must declare `CLEANFILES =` (typically in its primaries
-# init block) before `include scripts/sbom.am`.
+# init block) before `include tools/sbom/sbom.am`.
 CLEANFILES += $(SBOM_CDX) $(SBOM_SPDX) $(SBOM_SPDX_TV)
 
 .PHONY: sbom install-sbom uninstall-sbom

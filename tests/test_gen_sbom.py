@@ -887,14 +887,45 @@ class TestDepMetaShape(unittest.TestCase):
         self.assertEqual(gs.identifier_version('3.5.4'), '3.5.4')
         self.assertEqual(
             gs.identifier_version('3.5.4+wolfProvider-nonfips'), '3.5.4')
+        self.assertEqual(
+            gs.identifier_version('1.2.3+foo+bar'), '1.2.3')
         self.assertIsNone(gs.identifier_version(None))
         self.assertEqual(gs.identifier_version(''), '')
+
+    def test_cpe23_uri_strips_plus_build_metadata(self):
+        self.assertEqual(
+            gs.cpe23_uri('openssl', 'openssl', '3.5.4+wolfProvider-nonfips'),
+            'cpe:2.3:a:openssl:openssl:3.5.4:*:*:*:*:*:*:*')
+        self.assertEqual(
+            gs.product_cpe('wolfssl', '5.8.2+dirty'),
+            'cpe:2.3:a:wolfssl:wolfssl:5.8.2:*:*:*:*:*:*:*')
+
+    def test_dep_constructors_strip_plus_build_metadata(self):
+        # Constructors, not only cdx_dep_component / spdx_dep_package, must
+        # strip. A later caller that passes the raw openssl version string
+        # into meta['cpe'] must still emit a legal CPE 2.3 URI.
+        dirty = '1.2.3+local'
+        for key, meta in gs.DEP_META.items():
+            with self.subTest(dep=key):
+                cpe = meta['cpe'](dirty)
+                self.assertNotIn('+', cpe, cpe)
+                self.assertIn(':1.2.3:', cpe)
+                purl = meta['purl'](dirty)
+                self.assertNotIn('+', purl, purl)
+                self.assertIn('1.2.3', purl)
 
     def test_openssl_dep_cpe_and_purl_drop_build_metadata(self):
         # wolfProvider patches OpenSSL BUILD_METADATA, so openssl version
         # prints 3.5.4+wolfProvider-nonfips. CPE 2.3 rejects a raw `+`, and
         # the git tag is openssl-3.5.4. versionInfo keeps the local string.
         dirty = '3.5.4+wolfProvider-nonfips'
+        openssl = gs.DEP_META['openssl']
+        self.assertEqual(
+            openssl['cpe'](dirty),
+            'cpe:2.3:a:openssl:openssl:3.5.4:*:*:*:*:*:*:*')
+        self.assertEqual(
+            openssl['purl'](dirty),
+            'pkg:github/openssl/openssl@openssl-3.5.4')
         _, cdx = gs.cdx_dep_component(
             'wolfprovider', '1.2.1', 'openssl', {'openssl': dirty})
         self.assertEqual(cdx['version'], dirty)

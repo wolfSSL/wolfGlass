@@ -28,7 +28,9 @@ from datetime import datetime, timezone
 # 1.8  CPE and PURL identifiers drop `+` build metadata (OpenSSL
 #      BUILD_METADATA, PEP 440 local versions). A raw `+` is not legal
 #      in CPE 2.3 and does not match an upstream git tag. version /
-#      versionInfo still records the full string.
+#      versionInfo still records the full string. Constructors (cpe23_uri,
+#      wolfssl_project_purl, DEP_META lambdas) strip; this is not a
+#      full CPE sanitizer.
 # 1.7  wolfBoot CPE is registered in the NVD Official CPE Dictionary
 #      (published 2026-08-10). PRODUCT_CPE status flips to registered so
 #      the main package emits `cpe` and the pending properties stop.
@@ -140,10 +142,19 @@ def identifier_version(version):
     A raw `+` is not a legal CPE 2.3 version character, and the suffix
     is not an upstream git tag, so NVD / OSV cannot match it. Keep the
     full string in version / versionInfo; use this for identifiers.
+
+    This is not a full CPE 2.3 sanitizer: other illegal characters
+    (`:`, `*`, whitespace) are not rewritten.
     """
     if not version:
         return version
     return version.split('+', 1)[0]
+
+
+def cpe23_uri(vendor, product, version):
+    """CPE 2.3 application URI. Version uses identifier_version()."""
+    ident = identifier_version(version)
+    return f'cpe:2.3:a:{vendor}:{product}:{ident}:*:*:*:*:*:*:*'
 
 
 def wolfssl_project_purl(name, version):
@@ -183,10 +194,7 @@ PRODUCT_CPE = {
 
 
 def _product_cpe_string(meta, version):
-    ident = identifier_version(version)
-    return (
-        f"cpe:2.3:a:{meta['vendor']}:{meta['product']}:{ident}:*:*:*:*:*:*:*"
-    )
+    return cpe23_uri(meta['vendor'], meta['product'], version)
 
 
 def product_cpe(name, version):
@@ -313,7 +321,7 @@ DEP_META = {
         'pkgconfig': 'wolfssl',
         'purl': lambda v: wolfssl_project_purl('wolfssl', v),
         # The CPE NVD registers for the wolfSSL library.
-        'cpe': lambda v: f'cpe:2.3:a:wolfssl:wolfssl:{v}:*:*:*:*:*:*:*',
+        'cpe': lambda v: cpe23_uri('wolfssl', 'wolfssl', v),
     },
     # wolfCrypt is a separate NVD product (cpe:2.3:a:wolfssl:wolfcrypt).
     # Embedders such as wolfBoot compile wolfcrypt sources into the image;
@@ -334,7 +342,7 @@ DEP_META = {
         # does not collide with the wolfssl component's own PURL.  NVD
         # matching keys on the wolfcrypt CPE below.
         'purl': lambda v: wolfssl_project_purl('wolfssl', v) + '#wolfcrypt',
-        'cpe': lambda v: f'cpe:2.3:a:wolfssl:wolfcrypt:{v}:*:*:*:*:*:*:*',
+        'cpe': lambda v: cpe23_uri('wolfssl', 'wolfcrypt', v),
     },
     'libz': {
         'name': 'zlib',
@@ -345,8 +353,9 @@ DEP_META = {
         # pkg:github resolves in OSV / GHSA / Snyk / Trivy without the
         # vendor:product mapping a pkg:generic PURL would force.  zlib tags
         # its releases `vX.Y.Z`, so the bare pkg-config version needs the `v`.
-        'purl': lambda v: github_purl('madler', 'zlib', f'v{v}'),
-        'cpe': lambda v: f'cpe:2.3:a:zlib:zlib:{v}:*:*:*:*:*:*:*',
+        'purl': lambda v: github_purl(
+            'madler', 'zlib', f'v{identifier_version(v)}'),
+        'cpe': lambda v: cpe23_uri('zlib', 'zlib', v),
     },
     # openssl, declared as a dependency by the OpenSSL-compat products
     # (wolfProvider, wolfEngine) that link libcrypto/libssl alongside wolfSSL.
@@ -361,8 +370,9 @@ DEP_META = {
         'license': 'Apache-2.0',
         'download': 'https://github.com/openssl/openssl',
         'pkgconfig': 'openssl',
-        'purl': lambda v: github_purl('openssl', 'openssl', f'openssl-{v}'),
-        'cpe': lambda v: f'cpe:2.3:a:openssl:openssl:{v}:*:*:*:*:*:*:*',
+        'purl': lambda v: github_purl(
+            'openssl', 'openssl', f'openssl-{identifier_version(v)}'),
+        'cpe': lambda v: cpe23_uri('openssl', 'openssl', v),
     },
 }
 
@@ -1007,13 +1017,14 @@ def cdx_dep_component(name, pkg_version, key, dep_version_overrides=None):
         'externalReferences': [{'type': 'vcs', 'url': meta['download']}],
     }
     if version:
-        ident = identifier_version(version)
+        # Pass the full version: constructors apply identifier_version().
+        # version / versionInfo keep the local string (BUILD_METADATA).
         comp['version'] = version
-        comp['purl'] = meta['purl'](ident)
+        comp['purl'] = meta['purl'](version)
         # Both identifiers are version-bearing, so neither can be emitted
         # without a resolved version: a CPE with an empty version field
         # matches every release of the dependency in an NVD scan.
-        comp['cpe'] = meta['cpe'](ident)
+        comp['cpe'] = meta['cpe'](version)
     else:
         print(f"WARNING: version unknown for {meta['name']}; "
               "omitting version, purl and cpe", file=sys.stderr)
@@ -1037,17 +1048,16 @@ def spdx_dep_package(key, dep_version_overrides=None):
         'copyrightText': 'NOASSERTION',
     }
     if version:
-        ident = identifier_version(version)
         pkg['externalRefs'] = [
             {
                 'referenceCategory': 'SECURITY',
                 'referenceType': 'cpe23Type',
-                'referenceLocator': meta['cpe'](ident),
+                'referenceLocator': meta['cpe'](version),
             },
             {
                 'referenceCategory': 'PACKAGE-MANAGER',
                 'referenceType': 'purl',
-                'referenceLocator': meta['purl'](ident),
+                'referenceLocator': meta['purl'](version),
             },
         ]
     return spdx_id, pkg
