@@ -2824,6 +2824,50 @@ class TestBomshProvenanceVerify(unittest.TestCase):
                 any('no gitoid externalRefs' in m for m in messages),
                 messages)
 
+    def test_all_matched_spdx_are_verified_not_just_first(self):
+        # Regression: when the glob matches several SPDX documents, the
+        # verifier must check every one.  A second document that sorts *after*
+        # the good one and carries a dangling gitoid must fail the run --
+        # verifying only spdx_paths[0] would let it pass silently.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fx = _BomshFixture(tmpdir)          # omnibor.wolfssl-5.9.1 (valid)
+            bogus_gid = 'a' * 40                # well-formed hex, never staged
+            second = fx.tmpdir / 'omnibor.wolfssl-5.9.2.spdx.json'
+            second.write_text(json.dumps({'packages': [{
+                'name': 'wolfssl-later',
+                'externalRefs': [{
+                    'referenceCategory': 'PERSISTENT-ID',
+                    'referenceType': 'gitoid',
+                    'referenceLocator': f'gitoid:blob:sha1:{bogus_gid}',
+                }],
+            }]}))
+            ok, messages = fx.verify()
+            self.assertFalse(ok, f'later dangling SPDX not caught: {messages}')
+            joined = '\n'.join(messages)
+            self.assertIn('DANGLING', joined)
+            self.assertIn(bogus_gid, joined)
+            self.assertIn(str(second), joined)  # names the offending document
+
+    def test_multiple_valid_spdx_all_pass(self):
+        # Positive companion: two valid SPDX documents both verify, and the
+        # summary counts gitoids from both (not just the first).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fx = _BomshFixture(tmpdir)          # 3 gitoids
+            second = fx.tmpdir / 'omnibor.wolfssl-5.9.2.spdx.json'
+            second.write_text(json.dumps({'packages': [{
+                'name': 'wolfssl',
+                'externalRefs': [{
+                    'referenceCategory': 'PERSISTENT-ID',
+                    'referenceType': 'gitoid',
+                    'referenceLocator':
+                        f'gitoid:blob:sha1:{fx.gitoids["wolfssl"]}',
+                }],
+            }]}))
+            ok, messages = fx.verify()
+            self.assertTrue(ok, messages)
+            self.assertIn('2 SPDX file(s), 4 gitoid(s) verified',
+                          '\n'.join(messages))
+
     def test_object_store_integrity_skips_non_blob_files(self):
         # OmniBOR objects/ may contain housekeeping files at the root
         # (info/, pack/, etc.) that are NOT blobs and must not be
