@@ -720,5 +720,67 @@ class TestCliBehaviour(unittest.TestCase):
             self.assertFalse(os.path.exists(csaf))
 
 
+class TestPathIdValidation(unittest.TestCase):
+    """cveId and --advisory-id are interpolated into output filenames; a
+    record is fetched from a remote API and parsed as arbitrary JSON, so an
+    unvalidated id is an arbitrary-file-write vector.  Guard both."""
+
+    def _run(self, args):
+        return subprocess.run([sys.executable, str(SCRIPT)] + args,
+                              capture_output=True, text=True)
+
+    @staticmethod
+    def _record(cve_id):
+        return {'cveMetadata': {'cveId': cve_id},
+                'containers': {'cna': {
+                    'descriptions': [{'lang': 'en', 'value': 'test desc'}],
+                    'affected': [{'vendor': 'wolfSSL', 'product': 'wolfSSL',
+                                  'versions': []}]}}}
+
+    def test_traversal_cveid_rejected_and_writes_nothing_outside(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec = os.path.join(d, 'evil.json')
+            with open(rec, 'w') as f:
+                json.dump(self._record('../ESCAPED'), f)
+            out = os.path.join(d, 'out', 'batch')
+            os.makedirs(out)
+            r = self._run(['--cve-record', rec, '--out-dir', out])
+            self.assertNotEqual(r.returncode, 0, r.stdout)
+            self.assertIn('unsafe cveId', r.stderr)
+            # The escaped path (sibling of out/, i.e. d/out/ESCAPED.*) must
+            # not have been written.
+            escaped = os.path.join(d, 'out', 'ESCAPED.csaf.json')
+            self.assertFalse(os.path.exists(escaped), escaped)
+
+    def test_absolute_cveid_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec = os.path.join(d, 'abs.json')
+            with open(rec, 'w') as f:
+                json.dump(self._record('/etc/pwned'), f)
+            r = self._run(['--cve-record', rec, '--out-dir', d])
+            self.assertNotEqual(r.returncode, 0, r.stdout)
+            self.assertIn('unsafe cveId', r.stderr)
+
+    def test_well_formed_cveid_accepted(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec = os.path.join(d, 'good.json')
+            with open(rec, 'w') as f:
+                json.dump(self._record('CVE-2026-12345'), f)
+            r = self._run(['--cve-record', rec, '--out-dir', d])
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(
+                os.path.exists(os.path.join(d, 'CVE-2026-12345.csaf.json')))
+
+    def test_traversal_advisory_id_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec = os.path.join(d, 'good.json')
+            with open(rec, 'w') as f:
+                json.dump(self._record('CVE-2026-12345'), f)
+            r = self._run(['--cve-record', rec, '--out-dir', d,
+                           '--advisory-id', '../evil'])
+            self.assertNotEqual(r.returncode, 0, r.stdout)
+            self.assertIn('unsafe --advisory-id', r.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()

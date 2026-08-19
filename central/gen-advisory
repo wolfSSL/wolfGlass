@@ -34,6 +34,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import sys
 import urllib.request
 import uuid
@@ -42,6 +43,25 @@ from datetime import datetime, timezone
 
 GEN_TOOL_NAME = 'wolfssl-advisory-gen'
 GEN_TOOL_VERSION = '0.3'
+
+# CVE ids and advisory ids are interpolated into output filenames
+# (<id>.csaf.json / <id>.cdx.json) and into the CSAF self URL.  Records are
+# fetched from a remote API and parsed as arbitrary JSON, so an unvalidated id
+# is an untrusted-input -> arbitrary-file-write vector (e.g. cveId '../x').
+# Constrain both to a safe grammar with no path separators before either is
+# used to build a path.
+_CVE_ID_RE = re.compile(r'^CVE-[0-9]{4}-[0-9]{4,}$')
+_ADVISORY_ID_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
+
+
+def _validate_path_id(value, kind, pattern):
+    """Reject an id that is unsafe to interpolate into an output path."""
+    if not isinstance(value, str):
+        sys.exit(f"ERROR: refusing unsafe {kind}: expected string id, got {type(value).__name__}")
+    if not pattern.fullmatch(value):
+        sys.exit(f"ERROR: refusing unsafe {kind} {value!r}: must match "
+                 f"{pattern.pattern} (no path separators)")
+    return value
 
 _SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPTS_DIR.parent
@@ -278,6 +298,7 @@ def parse_record(record):
     cve_id = meta.get('cveId') or cna.get('cveId')
     if not cve_id:
         sys.exit("ERROR: CVE record has no cveId")
+    _validate_path_id(cve_id, 'cveId', _CVE_ID_RE)
 
     description = ''
     for d in cna.get('descriptions', []):
@@ -877,6 +898,10 @@ def main():
                    help='Write a single CycloneDX VEX document to this path '
                         'instead of batch mode.')
     args = p.parse_args()
+
+    # --advisory-id is interpolated into output filenames; constrain it too.
+    if args.advisory_id:
+        _validate_path_id(args.advisory_id, '--advisory-id', _ADVISORY_ID_RE)
 
     # ---- resolve the input records ----
     explicit = bool(args.cve_record or args.cve_id)
