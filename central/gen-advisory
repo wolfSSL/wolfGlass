@@ -56,7 +56,9 @@ _ADVISORY_ID_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 
 def _validate_path_id(value, kind, pattern):
     """Reject an id that is unsafe to interpolate into an output path."""
-    if not pattern.match(value):
+    if not isinstance(value, str):
+        sys.exit(f"ERROR: refusing unsafe {kind}: expected string id, got {type(value).__name__}")
+    if not pattern.fullmatch(value):
         sys.exit(f"ERROR: refusing unsafe {kind} {value!r}: must match "
                  f"{pattern.pattern} (no path separators)")
     return value
