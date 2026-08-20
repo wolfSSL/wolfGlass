@@ -270,6 +270,59 @@ def derived_uuid(*parts):
     return str(uuid.uuid5(SBOM_UUID_NAMESPACE, '\x00'.join(parts)))
 
 
+def config_identity(lib_hash, license_id, build_props, enabled_deps,
+                    dep_versions, *, supplier=None, component_type=None,
+                    license_text=None, hash_kind=None, hash_source=None,
+                    file_names=None, wolfssl_subset=None, subset_basis=None):
+    """Stable digest of the build configuration behind one name+version.
+
+    Folded into the SBOM serialNumber / SPDX documentNamespace so two builds
+    of one release with different configuration (FIPS vs non-FIPS, a different
+    --srcs set, a different feature-flag set) get distinct identifiers, while
+    an identical configuration still reproduces byte-for-byte.  Fields are
+    tagged and NUL-delimited so no two configurations serialize alike.
+
+    Invariant: every CLI input that can change the document body reaches this
+    digest.  One that does not is a collision -- two documents with differing
+    content under one serialNumber.  tests/test_sbom_identity.py classifies
+    the whole option set and fails on an unclassified new option.
+
+    lib_hash is folded in deliberately, so on the --lib path the identity
+    follows the built binary: the same sources under a different toolchain get
+    a different serialNumber.  An SBOM from --lib describes one artefact.  The
+    --srcs and --no-artifact-hash paths do not have this property."""
+    h = hashlib.sha256()
+
+    def _field(tag, value):
+        h.update(tag.encode())
+        h.update(b'\0')
+        h.update((value or '').encode())
+        h.update(b'\0')
+
+    _field('lib_hash', lib_hash)
+    _field('license', license_id)
+    for k, v in sorted(build_props):
+        _field('prop', f'{k}={v}')
+    for key in sorted(enabled_deps):
+        _field('dep', f'{key}={dep_versions.get(key) or ""}')
+    _field('supplier', supplier)
+    _field('component_type', component_type)
+    # Digested, not embedded: the text is a document field of its own and can
+    # differ while the SPDX identifier is unchanged.
+    _field('license_text',
+           hashlib.sha256(license_text.encode()).hexdigest()
+           if license_text else '')
+    _field('hash_kind', hash_kind)
+    _field('hash_source', hash_source)
+    # Filenames reach the document body without passing through lib_hash,
+    # which covers bytes only: a rename changes the body but not the hash.
+    for fname in sorted(file_names or []):
+        _field('file', fname)
+    _field('wolfssl_subset', wolfssl_subset)
+    _field('subset_basis', subset_basis)
+    return h.hexdigest()
+
+
 def build_timestamp():
     """Return (datetime, ISO-8601-Z string) honoring SOURCE_DATE_EPOCH.
     Reproducible Builds convention: if the env var is set to a valid
@@ -1825,8 +1878,28 @@ def main():
 
     dt, timestamp = build_timestamp()
     year = dt.year
-    serial = derived_uuid(args.name, args.version, 'serial')
-    doc_ns_uuid = derived_uuid(args.name, args.version, 'document')
+    # SPDX 2.3 6.5 requires documentNamespace to be unique, and a CycloneDX
+    # version:1 sharing a serialNumber over differing content is
+    # self-contradictory.  Every body-affecting input goes into the digest;
+    # see config_identity for the invariant.
+    identity_file_names = (
+        [fe['name'] for fe in file_entries] if file_entries
+        else (srcs_basenames or [])
+    )
+    config_id = config_identity(
+        lib_hash, license_id, build_props, enabled_deps,
+        dep_version_overrides,
+        supplier=args.supplier,
+        component_type=args.component_type,
+        license_text=license_text,
+        hash_kind=hash_kind,
+        hash_source=hash_source,
+        file_names=identity_file_names,
+        wolfssl_subset=wolfssl_subset,
+        subset_basis=subset_basis,
+    )
+    serial = derived_uuid(args.name, args.version, 'serial', config_id)
+    doc_ns_uuid = derived_uuid(args.name, args.version, 'document', config_id)
 
     cdx = generate_cdx(
         args.name, args.version, args.supplier,
