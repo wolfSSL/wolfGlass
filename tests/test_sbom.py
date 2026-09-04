@@ -176,7 +176,6 @@ def unit_tests():
                     "cpe": "cpe:2.3:a:wolfssl:wolfssl:5.9.1:*:*:*:*:*:*:*",
                     "components": [{
                         "name": "wolfcrypt", "version": "5.9.1",
-                        "cpe": "cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*",
                     }],
                 }],
             }, f)
