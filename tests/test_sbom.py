@@ -176,6 +176,7 @@ def unit_tests():
                     "cpe": "cpe:2.3:a:wolfssl:wolfssl:5.9.1:*:*:*:*:*:*:*",
                     "components": [{
                         "name": "wolfcrypt", "version": "5.9.1",
+                        "purl": "pkg:github/wolfssl/wolfssl@v5.9.1-stable#wolfcrypt",
                     }],
                 }],
             }, f)
@@ -184,6 +185,44 @@ def unit_tests():
                               "--require-dep-version", "wolfcrypt", nested],
                              stdout=subprocess.DEVNULL)
         check(rc == 0, "validator finds a nested dependency component")
+
+        no_purl = os.path.join(d, "no-purl.cdx.json")
+        with open(no_purl, "w") as f:
+            json.dump({
+                "bomFormat": "CycloneDX", "specVersion": "1.6",
+                "metadata": {"component": {"name": "wolfboot",
+                                           "version": "2.9.0",
+                                           "properties": [{"a": "b"}]}},
+                "components": [{
+                    "name": "wolfssl", "version": "5.9.1",
+                    "cpe": "cpe:2.3:a:wolfssl:wolfssl:5.9.1:*:*:*:*:*:*:*",
+                    "components": [{
+                        "name": "wolfcrypt", "version": "5.9.1",
+                    }],
+                }],
+            }, f)
+        rc = subprocess.call([sys.executable, VALIDATE,
+                              "--require-dep-version", "wolfcrypt", no_purl],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        check(rc != 0, "validator rejects nested wolfcrypt without a PURL")
+
+        no_cpe = os.path.join(d, "no-cpe.cdx.json")
+        with open(no_cpe, "w") as f:
+            json.dump({
+                "bomFormat": "CycloneDX", "specVersion": "1.6",
+                "metadata": {"component": {"name": "wolfboot",
+                                           "version": "2.9.0",
+                                           "properties": [{"a": "b"}]}},
+                "components": [{
+                    "name": "wolfssl", "version": "5.9.1",
+                }],
+            }, f)
+        rc = subprocess.call([sys.executable, VALIDATE,
+                              "--require-dep-version", "wolfssl", no_cpe],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        check(rc != 0, "validator still requires a CPE on wolfssl")
 
 
 def find_gen_sbom(explicit):
