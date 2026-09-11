@@ -17,6 +17,12 @@ when the SBOM is otherwise correct.
 All products in the table are registered in the NVD Official CPE Dictionary.
 `gen-sbom` emits the main-package `cpe` field for each.
 
+The wolfcrypt CPE stays in the dictionary. Nested wolfcrypt components do
+**not** emit it: NVD files crypto CVEs against `wolfssl`, not `wolfcrypt`,
+and a second CPE on the same sources is a future double-match risk.
+Matching rides on `cpe:2.3:a:wolfssl:wolfssl:<version>`. The unique id for
+the nested library is the PURL (`pkg:github/wolfssl/wolfssl@v<ver>-stable#wolfcrypt`).
+
 ## Pending products (none today)
 
 A product with `status: pending` emits **no `cpe` field**. A scanner cannot

@@ -854,13 +854,14 @@ class TestDepMetaShape(unittest.TestCase):
             wolfssl['cpe']('5.7.4'),
             'cpe:2.3:a:wolfssl:wolfssl:5.7.4:*:*:*:*:*:*:*')
 
-    def test_wolfcrypt_dep_entry_carries_registered_nvd_cpe(self):
+    def test_wolfcrypt_dep_entry_has_purl_and_no_cpe(self):
+        # Provenance only: NVD files crypto CVEs against wolfssl, not
+        # wolfcrypt. A nested CPE would not match today and would
+        # double-match later.
         wc = gs.DEP_META['wolfcrypt']
         self.assertEqual(wc['name'], 'wolfcrypt')
         self.assertIsNone(wc['pkgconfig'])
-        self.assertEqual(
-            wc['cpe']('5.9.1'),
-            'cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*')
+        self.assertIsNone(wc.get('cpe'))
         # Resolvable github PURL for the wolfssl release that ships it,
         # with a #wolfcrypt subpath so it does not collide with wolfssl.
         self.assertEqual(
@@ -907,12 +908,14 @@ class TestDepMetaShape(unittest.TestCase):
         dirty = '1.2.3+local'
         for key, meta in gs.DEP_META.items():
             with self.subTest(dep=key):
-                cpe = meta['cpe'](dirty)
-                self.assertNotIn('+', cpe, cpe)
-                self.assertIn(':1.2.3:', cpe)
                 purl = meta['purl'](dirty)
                 self.assertNotIn('+', purl, purl)
                 self.assertIn('1.2.3', purl)
+                if not meta.get('cpe'):
+                    continue
+                cpe = meta['cpe'](dirty)
+                self.assertNotIn('+', cpe, cpe)
+                self.assertIn(':1.2.3:', cpe)
 
     def test_openssl_dep_cpe_and_purl_drop_build_metadata(self):
         # wolfProvider patches OpenSSL BUILD_METADATA, so openssl version
@@ -943,16 +946,19 @@ class TestDepMetaShape(unittest.TestCase):
         self.assertEqual(
             locators['purl'], 'pkg:github/openssl/openssl@openssl-3.5.4')
 
-    def test_every_dep_entry_carries_both_identifiers(self):
-        # A dep with only one identifier is invisible to half the scanner
-        # population: PURL serves OSV / Trivy / Dependency-Track, CPE serves
-        # NVD, which is what a CRA vulnerability-monitoring process keys on.
+    def test_every_dep_entry_carries_a_purl(self):
+        # PURL serves OSV / Trivy / Dependency-Track. CPE serves NVD.
+        # wolfcrypt is the exception: matching rides on the parent
+        # wolfssl CPE, so a nested wolfcrypt CPE is omitted on purpose.
         for key, meta in gs.DEP_META.items():
             with self.subTest(dep=key):
                 purl = meta['purl']('1.2.3')
-                cpe = meta['cpe']('1.2.3')
                 self.assertTrue(purl.startswith('pkg:'), purl)
                 self.assertIn('1.2.3', purl)
+                if key == 'wolfcrypt':
+                    self.assertIsNone(meta.get('cpe'))
+                    continue
+                cpe = meta['cpe']('1.2.3')
                 self.assertTrue(cpe.startswith('cpe:2.3:a:'), cpe)
                 self.assertEqual(len(cpe.split(':')), 13, cpe)
                 self.assertIn(':1.2.3:', cpe)
@@ -1955,13 +1961,12 @@ class TestCdxDepComponent(unittest.TestCase):
         self.assertEqual(
             comp['purl'], 'pkg:github/wolfssl/wolfssl@v5.9.1-stable')
 
-    def test_wolfcrypt_dep_component_carries_nvd_cpe(self):
+    def test_wolfcrypt_dep_component_has_purl_and_no_cpe(self):
         _, comp = gs.cdx_dep_component(
             'wolfboot', '2.9.0', 'wolfcrypt', {'wolfcrypt': '5.9.1'})
         self.assertEqual(comp['name'], 'wolfcrypt')
         self.assertEqual(comp['version'], '5.9.1')
-        self.assertEqual(
-            comp['cpe'], 'cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*')
+        self.assertNotIn('cpe', comp)
         self.assertEqual(
             comp['purl'],
             'pkg:github/wolfssl/wolfssl@v5.9.1-stable#wolfcrypt')
@@ -2066,6 +2071,12 @@ class TestSpdxDepPackage(unittest.TestCase):
         self.assertEqual(
             cpe_refs[0]['referenceLocator'],
             'cpe:2.3:a:wolfssl:wolfssl:5.9.1:*:*:*:*:*:*:*')
+
+    def test_wolfcrypt_omits_cpe_externalref(self):
+        _, pkg = gs.spdx_dep_package('wolfcrypt', {'wolfcrypt': '5.9.1'})
+        types = [r['referenceType'] for r in pkg.get('externalRefs', [])]
+        self.assertNotIn('cpe23Type', types)
+        self.assertIn('purl', types)
 
 
 class TestGenerateCdx(unittest.TestCase):
@@ -2996,9 +3007,11 @@ class TestWolfbootCoatContract(unittest.TestCase):
 
         nested = {c['name']: c for c in top['wolfssl']['components']}
         self.assertEqual(set(nested), {'wolfcrypt'})
+        self.assertEqual(nested['wolfcrypt']['version'], '5.9.1')
         self.assertEqual(
-            nested['wolfcrypt']['cpe'],
-            'cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*')
+            nested['wolfcrypt']['purl'],
+            'pkg:github/wolfssl/wolfssl@v5.9.1-stable#wolfcrypt')
+        self.assertNotIn('cpe', nested['wolfcrypt'])
 
     def test_cdx_dependency_edges_follow_the_nesting(self):
         doc = gs.generate_cdx(**self.BASE_KW)
@@ -3053,6 +3066,18 @@ class TestWolfbootCoatContract(unittest.TestCase):
         self.assertEqual(
             rels[('SPDXRef-Package-wolfssl', 'SPDXRef-Package-wolfcrypt')],
             'CONTAINS')
+        pkgs = {p['name']: p for p in doc['packages']}
+        wc_refs = {r['referenceType']: r['referenceLocator']
+                   for r in pkgs['wolfcrypt']['externalRefs']}
+        self.assertNotIn('cpe23Type', wc_refs)
+        self.assertEqual(
+            wc_refs['purl'],
+            'pkg:github/wolfssl/wolfssl@v5.9.1-stable#wolfcrypt')
+        ssl_refs = {r['referenceType']: r['referenceLocator']
+                    for r in pkgs['wolfssl']['externalRefs']}
+        self.assertEqual(
+            ssl_refs['cpe23Type'],
+            'cpe:2.3:a:wolfssl:wolfssl:5.9.1:*:*:*:*:*:*:*')
 
     def test_spdx_wolfssl_own_sbom_contains_its_wolfcrypt(self):
         # wolfSSL ships wolfCrypt; it does not depend on it.
@@ -3075,11 +3100,12 @@ class TestWolfbootCoatContract(unittest.TestCase):
             self.BASE_KW, name='wolfssl', version='5.9.1',
             enabled_deps=['wolfcrypt'], component_type='library'))
         self.assertEqual([c['name'] for c in doc['components']], ['wolfcrypt'])
+        self.assertNotIn('cpe', doc['components'][0])
 
-    def test_tool_version_is_1_8(self):
+    def test_tool_version_is_1_9(self):
         doc = gs.generate_cdx(**self.BASE_KW)
         tools = doc['metadata']['tools']['components']
-        self.assertEqual(tools[0]['version'], '1.8')
+        self.assertEqual(tools[0]['version'], '1.9')
 
 
 if __name__ == '__main__':
@@ -3092,7 +3118,7 @@ class TestWolfcryptVersionInheritance(unittest.TestCase):
     Regression: the inheritance ran BEFORE _resolve_dep_versions, so it only
     ever saw versions passed explicitly via --dep-version.  A downstream
     embedder (wolfBoot) whose wolfssl version came from pkg-config got a
-    wolfcrypt component with no version, no purl and no cpe, and exit 0.
+    wolfcrypt component with no version and no purl, and exit 0.
     """
 
     def test_inherits_wolfssl_version_resolved_by_pkgconfig(self):
@@ -3121,17 +3147,20 @@ class TestWolfcryptVersionInheritance(unittest.TestCase):
             ['wolfssl'], overrides, 'wolfboot', '2.9.0')
         self.assertNotIn('wolfcrypt', overrides)
 
-    def test_inherited_version_yields_a_resolvable_cpe(self):
-        # End state that matters: the CPE 2.3 formatted string is well formed
-        # (13 colon-separated fields) and carries the inherited version.
+    def test_inherited_version_yields_a_resolvable_purl_and_no_cpe(self):
+        # End state that matters: the nested component is versioned and
+        # has a resolvable PURL. Matching stays on the wolfssl CPE.
         overrides = {'wolfssl': '5.9.1', 'wolfcrypt': None}
         gs._inherit_wolfcrypt_version(
             ['wolfssl', 'wolfcrypt'], overrides, 'wolfboot', '2.9.0')
         _ref, comp = gs.cdx_dep_component(
             'wolfcrypt', overrides['wolfcrypt'], 'wolfcrypt', overrides)
         self.assertEqual(
-            comp['cpe'], 'cpe:2.3:a:wolfssl:wolfcrypt:5.9.1:*:*:*:*:*:*:*')
-        self.assertEqual(len(comp['cpe'].split(':')), 13)
+            comp['purl'],
+            'pkg:github/wolfssl/wolfssl@v5.9.1-stable#wolfcrypt')
+        self.assertNotIn('cpe', comp)
+
+
 class TestEnabledDepsValidation(unittest.TestCase):
     """--dep-* must be exactly yes or no.
 
