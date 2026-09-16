@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""Completeness gate for wolfSSL release advisories.
+
+`gen-advisory` faithfully turns whatever CVE records it is given into CSAF/VEX.
+It has no notion of *which* CVEs a given product release actually fixed, so a
+bundle built from an incomplete `advisories/records/` directory is emitted
+without complaint. A `wolfssl-5.9.1` advisory that lists 2 CVEs when the
+release fixed 22 is standards-conformant but materially wrong: a consumer reads
+it as "5.9.1 fixed 2 issues".
+
+This tool closes that hole. It is the CI gate that reconciles three sources of
+truth for one release:
+
+  1. the CVE ids named in the product ChangeLog's Vulnerabilit* section(s)
+     (what the release actually fixed -- the authoritative membership list),
+  2. the CVE Program records present in --records-dir
+     (what `gen-advisory` can turn into an advisory body),
+  3. the entries present in the VEX overlay
+     (the human determination `gen-advisory` cannot invent).
+
+It fails (exit 1) if any release CVE is missing a record or an overlay entry,
+and it flags overlay entries that point at a CVE with no record. It does NOT
+judge whether a determination is *correct* -- that is human analysis no tool
+can validate; it only proves nothing was silently dropped.
+
+Pure stdlib, mirroring the other central/ tools.
+"""
+
+import argparse
+import json
+import pathlib
+import re
+import sys
+
+_SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPTS_DIR.parent
+
+# Mirror gen-advisory's canonical locations so the gate and the generator see
+# the same inputs.
+DEFAULT_RECORDS_DIR = _REPO_ROOT / 'advisories' / 'records'
+DEFAULT_OVERLAY = _REPO_ROOT / 'advisories' / 'vex-overlay.json'
+
+# The product ChangeLog is the release membership authority. wolfSSL lives in a
+# sibling checkout next to wolfglass; override with --changelog for any product.
+DEFAULT_CHANGELOG = _REPO_ROOT.parent / 'wolfssl' / 'ChangeLog.md'
+
+_CVE_ID_RE = re.compile(r'CVE-[0-9]{4}-[0-9]{4,}')
+_VERSION_RE = re.compile(r'^[0-9]+\.[0-9]+(?:\.[0-9]+)?$')
+
+
+def _release_header_re(product):
+    """Match e.g. '# wolfSSL Release 5.9.1 (Apr. 8, 2026)'."""
+    return re.compile(rf'^#\s+{re.escape(product)}\s+Release\s+'
+                      r'([0-9]+\.[0-9]+(?:\.[0-9]+)?)\b')
+
+
+def release_block(changelog_text, product, release):
+    """Return the lines of the ChangeLog belonging to one release.
+
+    The block runs from that release's header up to (not including) the next
+    release header of the same product.
+    """
+    header = _release_header_re(product)
+    lines = changelog_text.splitlines()
+    start = end = None
+    for i, line in enumerate(lines):
+        m = header.match(line)
+        if not m:
+            continue
+        if m.group(1) == release:
+            start = i
+        elif start is not None:
+            end = i
+            break
+    if start is None:
+        sys.exit(f"ERROR: release {product} {release} not found in ChangeLog. "
+                 "Check --product/--release/--changelog.")
+    return lines[start:end]
+
+
+# Bullet subject only: `* [High] CVE-2026-7531`. Ids named in the paragraph
+# (e.g. "follow-up to CVE-2026-5460") are context, not this release's membership.
+_BULLET_CVE_RE = re.compile(
+    r'^\*\s*\[(?:Critical|High|Med|Medium|Low)\]\s*'
+    r'(CVE-[0-9]{4}-[0-9]{4,})\b'
+)
+
+
+def cves_fixed_in_release(block_lines):
+    """CVE ids that head a Vulnerabilit* bullet in one release.
+
+    A release block has one or more `## ...Vulnerabilit...` sections (wolfSSL
+    5.9.1 has both `## Vulnerabilities` and `## Experimental Build
+    Vulnerability`). CVE ids mentioned in *other* sections (e.g. a Bug Fixes
+    note referencing a prior CVE) are excluded. CVE ids named only in a
+    bullet's body are also excluded: they were not the subject of that entry.
+    Order of first appearance is preserved.
+    """
+    found = []
+    in_vuln = False
+    for line in block_lines:
+        if re.match(r'^##\s', line):
+            in_vuln = 'vulnerab' in line.lower()
+            continue
+        if not in_vuln:
+            continue
+        m = _BULLET_CVE_RE.match(line)
+        if m and m.group(1) not in found:
+            found.append(m.group(1))
+    return found
+
+
+def load_cve_list(path):
+    """Pinned membership file: one CVE id per line, `#` comments allowed."""
+    found = []
+    for raw in pathlib.Path(path).read_text().splitlines():
+        line = raw.split('#', 1)[0].strip()
+        if not line:
+            continue
+        if not _CVE_ID_RE.fullmatch(line):
+            sys.exit(f"ERROR: not a CVE id in {path}: {line!r}")
+        if line not in found:
+            found.append(line)
+    return found
+
+
+def load_overlay(path):
+    with open(path) as fh:
+        data = json.load(fh)
+    # Keys are CVE ids; keys starting with '_' are documentation/comments.
+    return {k for k in data if _CVE_ID_RE.fullmatch(k)}
+
+
+def records_present(records_dir):
+    d = pathlib.Path(records_dir)
+    return {p.stem for p in d.glob('*.json') if _CVE_ID_RE.fullmatch(p.stem)}
+
+
+def build_report(release_cves, have_records, have_overlay):
+    rows = []
+    for cve in release_cves:
+        rows.append({
+            'cve': cve,
+            'record': cve in have_records,
+            'overlay': cve in have_overlay,
+        })
+    missing_record = [r['cve'] for r in rows if not r['record']]
+    missing_overlay = [r['cve'] for r in rows if not r['overlay']]
+    # Overlay entries that reference a CVE with no record are broken input.
+    orphan_overlay = sorted(c for c in have_overlay if c not in have_records)
+    return {
+        'rows': rows,
+        'missing_record': missing_record,
+        'missing_overlay': missing_overlay,
+        'orphan_overlay': orphan_overlay,
+    }
+
+
+def print_human(product, release, report):
+    rows = report['rows']
+    total = len(rows)
+    covered = sum(1 for r in rows if r['record'] and r['overlay'])
+    print(f"Advisory completeness: {product} {release}")
+    print(f"  release CVEs: {total}")
+    print(f"  fully covered (record + overlay): {covered}/{total}")
+    print()
+    print(f"  {'CVE':<18} {'record':<8} {'overlay':<8}")
+    print(f"  {'-'*18} {'-'*8} {'-'*8}")
+    for r in rows:
+        rec = 'yes' if r['record'] else 'MISSING'
+        ov = 'yes' if r['overlay'] else 'MISSING'
+        print(f"  {r['cve']:<18} {rec:<8} {ov:<8}")
+    if report['missing_record']:
+        print(f"\n  missing CVE records ({len(report['missing_record'])}): "
+              + ', '.join(report['missing_record']))
+    if report['missing_overlay']:
+        print(f"  missing overlay entries ({len(report['missing_overlay'])}): "
+              + ', '.join(report['missing_overlay']))
+    if report['orphan_overlay']:
+        print(f"  overlay entries with no record ({len(report['orphan_overlay'])}): "
+              + ', '.join(report['orphan_overlay']))
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description='Fail a release if any of its ChangeLog CVEs lacks a CVE '
+                    'record or a VEX overlay entry (the completeness gate for '
+                    'gen-advisory bundles).')
+    p.add_argument('--release', default=None,
+                   help='Product release version, e.g. 5.9.1. Required unless '
+                        '--cve-list is given.')
+    p.add_argument('--cve-list', default=None,
+                   help='Pinned CVE id list (one per line). Use this in CI '
+                        'when the product ChangeLog is not in this repo.')
+    p.add_argument('--product', default='wolfSSL',
+                   help='Product name as it appears in the ChangeLog release '
+                        'header (default: wolfSSL).')
+    p.add_argument('--changelog', default=str(DEFAULT_CHANGELOG),
+                   help='Path to the product ChangeLog (default: sibling '
+                        'wolfssl/ChangeLog.md).')
+    p.add_argument('--records-dir', default=str(DEFAULT_RECORDS_DIR),
+                   help='Directory of CVE JSON 5.x records.')
+    p.add_argument('--overlay', default=str(DEFAULT_OVERLAY),
+                   help='VEX overlay JSON.')
+    p.add_argument('--json', action='store_true',
+                   help='Emit the reconciliation as JSON instead of a table.')
+    args = p.parse_args()
+
+    if args.cve_list:
+        list_path = pathlib.Path(args.cve_list)
+        if not list_path.is_file():
+            sys.exit(f"ERROR: CVE list not found: {list_path}")
+        release_cves = load_cve_list(list_path)
+        if args.release is None:
+            args.release = list_path.stem
+    elif args.release:
+        if not _VERSION_RE.match(args.release):
+            sys.exit(f"ERROR: --release {args.release!r} is not a version like 5.9.1")
+        changelog = pathlib.Path(args.changelog)
+        if not changelog.is_file():
+            sys.exit(f"ERROR: ChangeLog not found: {changelog}")
+        block = release_block(changelog.read_text(), args.product, args.release)
+        release_cves = cves_fixed_in_release(block)
+    else:
+        sys.exit("ERROR: pass --release (with a ChangeLog) or --cve-list.")
+
+    if not release_cves:
+        sys.exit(f"ERROR: no CVEs found for {args.product} {args.release}.")
+
+    have_records = records_present(args.records_dir)
+    have_overlay = load_overlay(args.overlay)
+    report = build_report(release_cves, have_records, have_overlay)
+
+    if args.json:
+        print(json.dumps({
+            'product': args.product,
+            'release': args.release,
+            **report,
+        }, indent=2))
+    else:
+        print_human(args.product, args.release, report)
+
+    ok = (not report['missing_record']
+          and not report['missing_overlay']
+          and not report['orphan_overlay'])
+    if not ok:
+        sys.exit(1)
+    print("\nOK: every release CVE has a record and an overlay entry.")
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,9 @@
+{
+  "name": "wolfglass-csaf-validate",
+  "private": true,
+  "type": "module",
+  "description": "Pinned Secvisogram CSAF 2.0 gate used by .github/workflows/advisory.yml",
+  "dependencies": {
+    "@secvisogram/csaf-validator-lib": "2.0.25"
+  }
+}

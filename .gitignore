@@ -3,6 +3,10 @@
 *.spdx.json
 *.spdx
 
+# Generated CSAF/VEX (rebuild in CI / with gen-advisory + csaf-publish)
+advisories/out/
+advisories/publish/
+
 # Build provenance output
 omnibor/
 *_raw_logfile*
@@ -12,7 +16,13 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.venv-poc/
 venv/
+
+# CSAF PoC: throwaway signing key (never commit a secret key) + node deps
+advisories/.poc-key/
+tools/csaf-validate/node_modules/
+tools/csaf-validate/package-lock.json
 
 # Editor / OS
 .DS_Store

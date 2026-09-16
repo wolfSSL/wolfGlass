@@ -1,0 +1,174 @@
+name: Advisory catalogue
+
+# Validates the committed CSAF/VEX catalogue (records + overlay) and the
+# publish layout. Generated documents are built in CI, not committed.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  unit:
+    name: advisory unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Syntax-check advisory tools
+        run: |
+          python3 -m py_compile \
+            central/gen-advisory \
+            central/advisory-completeness \
+            central/csaf-publish \
+            central/csaf-verify \
+            central/csaf-keygen \
+            central/test_gen_advisory.py \
+            central/test_advisory_completeness.py \
+            central/test_csaf_publish.py
+
+      - name: Unit tests
+        run: |
+          python3 -m unittest \
+            central/test_gen_advisory.py \
+            central/test_advisory_completeness.py \
+            central/test_csaf_publish.py
+
+      - name: Completeness gate against the pinned 5.9.2 list
+        run: python3 central/advisory-completeness --cve-list advisories/releases/5.9.2.cves
+
+  catalogue:
+    name: generate and validate 5.9.2
+    runs-on: ubuntu-24.04
+    needs: unit
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install validators
+        run: |
+          python3 -m pip install --user 'cyclonedx-bom==7.*' 'jsonschema==4.*'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          npm install --no-save --prefix tools/csaf-validate
+
+      - name: Real overlay matches its JSON Schema
+        run: |
+          python3 - <<'PY'
+          import json, jsonschema
+          schema = json.load(open('central/advisory-vex-overlay.schema.json'))
+          overlay = json.load(open('advisories/vex-overlay.json'))
+          jsonschema.Draft202012Validator.check_schema(schema)
+          jsonschema.Draft202012Validator(schema).validate(overlay)
+          print('OK: advisories/vex-overlay.json matches schema')
+          PY
+
+      - name: Generate 5.9.2 CSAF + CycloneDX VEX
+        run: |
+          set -e
+          REC="${RUNNER_TEMP}/rec592"
+          ADV="${RUNNER_TEMP}/adv592"
+          mkdir -p "$REC" "$ADV"
+          while read -r id; do
+            [ -n "$id" ] || continue
+            cp "advisories/records/${id}.json" "$REC/"
+          done < <(grep -E '^CVE-[0-9]{4}-[0-9]{4,}$' advisories/releases/5.9.2.cves)
+          python3 central/gen-advisory \
+            --records-dir "$REC" \
+            --vex-overlay advisories/vex-overlay.json \
+            --out-dir "$ADV"
+          python3 central/gen-advisory \
+            --records-dir "$REC" \
+            --vex-overlay advisories/vex-overlay.json \
+            --advisory-id wolfssl-5.9.2 \
+            --csaf-out "$ADV/wolfssl-5.9.2.csaf.json" \
+            --cdx-vex-out "$ADV/wolfssl-5.9.2.cdx.json"
+          echo "ADV=$ADV" >> "$GITHUB_ENV"
+
+      - name: Bundle membership matches 5.9.2.cves
+        run: |
+          python3 - <<'PY'
+          import pathlib, os, sys
+          sys.path.insert(0, 'central')
+          # Load advisory-completeness as a module (no .py suffix).
+          import importlib.util
+          from importlib.machinery import SourceFileLoader
+          loader = SourceFileLoader('ac', 'central/advisory-completeness')
+          spec = importlib.util.spec_from_loader('ac', loader)
+          ac = importlib.util.module_from_spec(spec)
+          loader.exec_module(ac)
+          pin = ac.load_cve_list('advisories/releases/5.9.2.cves')
+          doc = __import__('json').loads(
+              pathlib.Path(os.environ['ADV'], 'wolfssl-5.9.2.csaf.json').read_text())
+          got = [v['cve'] for v in doc['vulnerabilities']]
+          if set(got) != set(pin) or len(got) != len(pin):
+              print('pin', pin, file=sys.stderr)
+              print('got', got, file=sys.stderr)
+              sys.exit('ERROR: bundle CVE set does not match 5.9.2.cves')
+          print(f'OK: bundle has {len(got)} CVEs matching 5.9.2.cves')
+          PY
+
+      - name: CSAF 2.0 strict schema + mandatory tests
+        run: node tools/csaf-validate/csaf_validate.mjs "${ADV}"/*.csaf.json
+
+      - name: csaf_validate runner contract
+        run: node tools/csaf-validate/test_csaf_validate.mjs "${ADV}/CVE-2026-11310.csaf.json"
+
+      - name: CycloneDX 1.6 strict schema
+        run: |
+          python3 - <<'PY'
+          import glob, os, sys
+          from cyclonedx.validation.json import JsonStrictValidator
+          from cyclonedx.schema import SchemaVersion
+          v = JsonStrictValidator(SchemaVersion.V1_6)
+          paths = sorted(glob.glob(os.environ['ADV'] + '/*.cdx.json'))
+          assert paths, 'no CycloneDX VEX documents were generated'
+          for p in paths:
+              errs = v.validate_str(open(p).read())
+              if errs:
+                  print(f'INVALID: {p}: {errs}', file=sys.stderr)
+                  sys.exit(1)
+              print(f'OK: {p}')
+          PY
+
+      - name: Unsigned publish tree (hashes + self URL)
+        run: |
+          python3 central/csaf-publish \
+            --docs-dir "${ADV}" \
+            --out-root "${RUNNER_TEMP}/publish592"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, sys
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'publish592' / '.well-known' / 'csaf'
+          index = [ln for ln in (root / 'index.txt').read_text().splitlines() if ln]
+          docs = sorted(p for p in root.glob('*/*/*.json'))
+          if len(index) != len(docs):
+              sys.exit(f'ERROR: index has {len(index)} lines, disk has {len(docs)} json files')
+          for rel in index:
+              dest = root / rel
+              if not dest.is_file():
+                  sys.exit(f'ERROR: index path missing: {rel}')
+              doc = json.loads(dest.read_text())
+              selfs = [r['url'] for r in doc['document']['references']
+                       if r.get('category') == 'self']
+              want = 'https://www.wolfssl.com/.well-known/csaf/' + rel
+              if selfs != [want]:
+                  sys.exit(f'ERROR: self URL {selfs!r} != {want!r}')
+              for algo in ('sha256', 'sha512'):
+                  side = dest.with_name(dest.name + '.' + algo)
+                  got = hashlib.new(algo, dest.read_bytes()).hexdigest()
+                  if side.read_text().split()[0] != got:
+                      sys.exit(f'ERROR: {algo} mismatch for {rel}')
+          print(f'OK: published {len(docs)} unsigned documents')
+          PY
