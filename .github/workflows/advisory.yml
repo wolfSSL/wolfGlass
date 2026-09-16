@@ -8,6 +8,9 @@ on:
     branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   unit:
     name: advisory unit tests
@@ -39,8 +42,15 @@ jobs:
             central/test_advisory_completeness.py \
             central/test_csaf_publish.py
 
-      - name: Completeness gate against the pinned 5.9.2 list
-        run: python3 central/advisory-completeness --cve-list advisories/releases/5.9.2.cves
+      - name: Completeness gate against ChangeLog + 5.9.2 pin
+        run: |
+          python3 central/advisory-completeness \
+            --cve-list advisories/releases/5.9.2.cves \
+            --release 5.9.2 \
+            --changelog central/testdata/ChangeLog-5.9.2.md \
+            --prior-release advisories/releases/5.9.2.prior-release.cves \
+            --mentions advisories/releases/5.9.2.mentions.cves \
+            --require-fixed-version 5.9.2
 
   catalogue:
     name: generate and validate 5.9.2
@@ -60,9 +70,9 @@ jobs:
 
       - name: Install validators
         run: |
-          python3 -m pip install --user 'cyclonedx-bom==7.*' 'jsonschema==4.*'
+          python3 -m pip install --user -r tools/csaf-validate/requirements.txt
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          npm install --no-save --prefix tools/csaf-validate
+          npm ci --ignore-scripts --prefix tools/csaf-validate
 
       - name: Real overlay matches its JSON Schema
         run: |
@@ -102,7 +112,6 @@ jobs:
           python3 - <<'PY'
           import pathlib, os, sys
           sys.path.insert(0, 'central')
-          # Load advisory-completeness as a module (no .py suffix).
           import importlib.util
           from importlib.machinery import SourceFileLoader
           loader = SourceFileLoader('ac', 'central/advisory-completeness')
@@ -126,28 +135,41 @@ jobs:
       - name: csaf_validate runner contract
         run: node tools/csaf-validate/test_csaf_validate.mjs "${ADV}/CVE-2026-11310.csaf.json"
 
-      - name: CycloneDX 1.6 strict schema
+      - name: CycloneDX 1.6 strict schema and CVSS v4 ratings
         run: |
           python3 - <<'PY'
-          import glob, os, sys
+          import glob, json, os, sys
           from cyclonedx.validation.json import JsonStrictValidator
           from cyclonedx.schema import SchemaVersion
           v = JsonStrictValidator(SchemaVersion.V1_6)
           paths = sorted(glob.glob(os.environ['ADV'] + '/*.cdx.json'))
           assert paths, 'no CycloneDX VEX documents were generated'
+          missing = []
           for p in paths:
-              errs = v.validate_str(open(p).read())
+              text = open(p).read()
+              errs = v.validate_str(text)
               if errs:
                   print(f'INVALID: {p}: {errs}', file=sys.stderr)
                   sys.exit(1)
+              bom = json.loads(text)
+              for vuln in bom.get('vulnerabilities') or []:
+                  ratings = vuln.get('ratings') or []
+                  if not any(r.get('method') == 'CVSSv4' and r.get('score') is not None
+                             for r in ratings):
+                      missing.append(f"{p}:{vuln.get('id')}")
               print(f'OK: {p}')
+          if missing:
+              print('missing CVSSv4 ratings:', missing, file=sys.stderr)
+              sys.exit(1)
           PY
 
-      - name: Unsigned publish tree (hashes + self URL)
+      - name: Unsigned publish tree (hashes + self URL + verify)
         run: |
           python3 central/csaf-publish \
             --docs-dir "${ADV}" \
             --out-root "${RUNNER_TEMP}/publish592"
+          python3 central/csaf-verify \
+            --root "${RUNNER_TEMP}/publish592/.well-known/csaf"
           python3 - <<'PY'
           import hashlib, json, os, pathlib, sys
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'publish592' / '.well-known' / 'csaf'
@@ -170,5 +192,11 @@ jobs:
                   got = hashlib.new(algo, dest.read_bytes()).hexdigest()
                   if side.read_text().split()[0] != got:
                       sys.exit(f'ERROR: {algo} mismatch for {rel}')
+          md = root / 'provider-metadata.json'
+          for algo in ('sha256', 'sha512'):
+              side = md.with_name(md.name + '.' + algo)
+              got = hashlib.new(algo, md.read_bytes()).hexdigest()
+              if side.read_text().split()[0] != got:
+                  sys.exit(f'ERROR: {algo} mismatch for provider-metadata.json')
           print(f'OK: published {len(docs)} unsigned documents')
           PY

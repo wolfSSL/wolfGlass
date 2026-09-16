@@ -1,0 +1,5 @@
+# Pinned Python validator deps for .github/workflows/advisory.yml.
+# The CycloneDX 1.6 schema is loaded from cyclonedx-python-lib; there is no
+# cyclonedx-bom CLI in this path.
+jsonschema==4.23.0
+cyclonedx-python-lib==11.12.0

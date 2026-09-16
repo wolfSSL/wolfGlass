@@ -23,6 +23,16 @@ and it flags overlay entries that point at a CVE with no record. It does NOT
 judge whether a determination is *correct* -- that is human analysis no tool
 can validate; it only proves nothing was silently dropped.
 
+When a ChangeLog is supplied together with a pin list, it also checks:
+
+  * strict bullets minus --prior-release equals the pin list
+  * loose CVE ids minus strict bullets equals --mentions
+  * optional --require-fixed-version is present on every pin overlay entry
+
+A partial miss used to look like a complete release: the strict bullet regex
+captures one id per line, so a second id on the same bullet was silent. The
+loose set makes that fail loudly.
+
 Pure stdlib, mirroring the other central/ tools.
 """
 
@@ -86,17 +96,16 @@ _BULLET_CVE_RE = re.compile(
 )
 
 
-def cves_fixed_in_release(block_lines):
-    """CVE ids that head a Vulnerabilit* bullet in one release.
+def cves_in_vuln_sections(block_lines):
+    """Return (strict, loose) CVE ids from Vulnerabilit* sections.
 
-    A release block has one or more `## ...Vulnerabilit...` sections (wolfSSL
-    5.9.1 has both `## Vulnerabilities` and `## Experimental Build
-    Vulnerability`). CVE ids mentioned in *other* sections (e.g. a Bug Fixes
-    note referencing a prior CVE) are excluded. CVE ids named only in a
-    bullet's body are also excluded: they were not the subject of that entry.
-    Order of first appearance is preserved.
+    strict: one id per `* [Sev] CVE-…` bullet head, order of first appearance.
+    loose: every CVE id in those sections, including body mentions and extra
+    ids on the same bullet. A non-empty (loose - strict) is a silent drop by
+    the strict rule and must be classified (pin, prior-release, or mentions).
     """
-    found = []
+    strict = []
+    loose = []
     in_vuln = False
     for line in block_lines:
         if re.match(r'^##\s', line):
@@ -104,10 +113,19 @@ def cves_fixed_in_release(block_lines):
             continue
         if not in_vuln:
             continue
+        for cid in _CVE_ID_RE.findall(line):
+            if cid not in loose:
+                loose.append(cid)
         m = _BULLET_CVE_RE.match(line)
-        if m and m.group(1) not in found:
-            found.append(m.group(1))
-    return found
+        if m and m.group(1) not in strict:
+            strict.append(m.group(1))
+    return strict, loose
+
+
+def cves_fixed_in_release(block_lines):
+    """CVE ids that head a Vulnerabilit* bullet in one release."""
+    strict, _loose = cves_in_vuln_sections(block_lines)
+    return strict
 
 
 def load_cve_list(path):
@@ -124,16 +142,58 @@ def load_cve_list(path):
     return found
 
 
-def load_overlay(path):
+def load_overlay_map(path):
     with open(path) as fh:
         data = json.load(fh)
+    return {k: v for k, v in data.items() if _CVE_ID_RE.fullmatch(k)}
+
+
+def load_overlay(path):
     # Keys are CVE ids; keys starting with '_' are documentation/comments.
-    return {k for k in data if _CVE_ID_RE.fullmatch(k)}
+    return set(load_overlay_map(path))
 
 
 def records_present(records_dir):
     d = pathlib.Path(records_dir)
     return {p.stem for p in d.glob('*.json') if _CVE_ID_RE.fullmatch(p.stem)}
+
+
+def reconcile_changelog(strict, loose, pin, prior, mentions):
+    """Compare pin/prior/mentions lists to ChangeLog strict and loose sets.
+
+    expected pin = strict bullets minus prior-release bullets
+    expected mentions = loose ids the strict rule dropped
+    """
+    strict_set = set(strict)
+    pin_set = set(pin)
+    prior_set = set(prior)
+    mentions_set = set(mentions)
+
+    dropped = [c for c in loose if c not in strict_set]
+    expected_pin = [c for c in strict if c not in prior_set]
+
+    return {
+        'strict': strict,
+        'loose': loose,
+        'dropped_by_strict': dropped,
+        'expected_pin': expected_pin,
+        'pin_missing': [c for c in expected_pin if c not in pin_set],
+        'pin_extra': [c for c in pin if c not in set(expected_pin)],
+        'mentions_missing': [c for c in dropped if c not in mentions_set],
+        'mentions_extra': [c for c in mentions if c not in set(dropped)],
+        'prior_not_in_strict': [c for c in prior if c not in strict_set],
+    }
+
+
+def overlay_missing_fixed_version(pin, overlay_map, release):
+    """Pin members whose overlay does not list `release` in fixed_versions."""
+    bad = []
+    for cve in pin:
+        entry = overlay_map.get(cve) or {}
+        versions = entry.get('fixed_versions') or []
+        if release not in versions:
+            bad.append(cve)
+    return bad
 
 
 def build_report(release_cves, have_records, have_overlay):
@@ -179,6 +239,29 @@ def print_human(product, release, report):
     if report['orphan_overlay']:
         print(f"  overlay entries with no record ({len(report['orphan_overlay'])}): "
               + ', '.join(report['orphan_overlay']))
+    ch = report.get('changelog')
+    if ch:
+        print()
+        print(f"  ChangeLog strict bullets: {len(ch['strict'])}")
+        print(f"  ChangeLog loose ids: {len(ch['loose'])}")
+        if ch['dropped_by_strict']:
+            print(f"  ids the strict rule dropped: "
+                  + ', '.join(ch['dropped_by_strict']))
+        if ch['pin_missing']:
+            print(f"  pin missing vs ChangeLog: " + ', '.join(ch['pin_missing']))
+        if ch['pin_extra']:
+            print(f"  pin extra vs ChangeLog: " + ', '.join(ch['pin_extra']))
+        if ch['mentions_missing']:
+            print(f"  mentions file missing: "
+                  + ', '.join(ch['mentions_missing']))
+        if ch['mentions_extra']:
+            print(f"  mentions file extra: " + ', '.join(ch['mentions_extra']))
+        if ch['prior_not_in_strict']:
+            print(f"  prior-release not a ChangeLog bullet: "
+                  + ', '.join(ch['prior_not_in_strict']))
+    if report.get('wrong_fixed_version'):
+        print(f"  overlay fixed_versions missing {release}: "
+              + ', '.join(report['wrong_fixed_version']))
 
 
 def main():
@@ -188,16 +271,27 @@ def main():
                     'gen-advisory bundles).')
     p.add_argument('--release', default=None,
                    help='Product release version, e.g. 5.9.1. Required unless '
-                        '--cve-list is given.')
+                        '--cve-list is given. Must match the CVE-list filename '
+                        'stem when both are set.')
     p.add_argument('--cve-list', default=None,
                    help='Pinned CVE id list (one per line). Use this in CI '
                         'when the product ChangeLog is not in this repo.')
     p.add_argument('--product', default='wolfSSL',
                    help='Product name as it appears in the ChangeLog release '
                         'header (default: wolfSSL).')
-    p.add_argument('--changelog', default=str(DEFAULT_CHANGELOG),
-                   help='Path to the product ChangeLog (default: sibling '
-                        'wolfssl/ChangeLog.md).')
+    p.add_argument('--changelog', default=None,
+                   help='Path to the product ChangeLog. Required with '
+                        '--release when --cve-list is omitted. With --cve-list, '
+                        'pass this to reconcile the pin against bullets.')
+    p.add_argument('--prior-release', default=None,
+                   help='CVE ids that head a ChangeLog bullet but shipped in '
+                        'an earlier release (not pin members).')
+    p.add_argument('--mentions', default=None,
+                   help='CVE ids the strict bullet rule drops (body mentions '
+                        'or extra ids on the same bullet).')
+    p.add_argument('--require-fixed-version', default=None,
+                   help='Every pin overlay entry must list this version in '
+                        'fixed_versions (catches a 5.9.1 fix pinned as 5.9.2).')
     p.add_argument('--records-dir', default=str(DEFAULT_RECORDS_DIR),
                    help='Directory of CVE JSON 5.x records.')
     p.add_argument('--overlay', default=str(DEFAULT_OVERLAY),
@@ -206,21 +300,33 @@ def main():
                    help='Emit the reconciliation as JSON instead of a table.')
     args = p.parse_args()
 
+    changelog_path = None
+    reconcile_pin_vs_changelog = False
     if args.cve_list:
         list_path = pathlib.Path(args.cve_list)
         if not list_path.is_file():
             sys.exit(f"ERROR: CVE list not found: {list_path}")
         release_cves = load_cve_list(list_path)
+        list_stem = list_path.stem
         if args.release is None:
-            args.release = list_path.stem
+            args.release = list_stem
+        elif args.release != list_stem:
+            sys.exit(f"ERROR: --release {args.release} does not match "
+                     f"--cve-list stem {list_stem} ({list_path.name}).")
+        if args.changelog:
+            changelog_path = pathlib.Path(args.changelog)
+            reconcile_pin_vs_changelog = True
     elif args.release:
         if not _VERSION_RE.match(args.release):
             sys.exit(f"ERROR: --release {args.release!r} is not a version like 5.9.1")
-        changelog = pathlib.Path(args.changelog)
-        if not changelog.is_file():
-            sys.exit(f"ERROR: ChangeLog not found: {changelog}")
-        block = release_block(changelog.read_text(), args.product, args.release)
+        changelog_path = pathlib.Path(args.changelog or DEFAULT_CHANGELOG)
+        if not changelog_path.is_file():
+            sys.exit(f"ERROR: ChangeLog not found: {changelog_path}")
+        block = release_block(changelog_path.read_text(), args.product,
+                              args.release)
         release_cves = cves_fixed_in_release(block)
+        # Pin came from the ChangeLog. Still reconcile if prior/mentions given.
+        reconcile_pin_vs_changelog = bool(args.prior_release or args.mentions)
     else:
         sys.exit("ERROR: pass --release (with a ChangeLog) or --cve-list.")
 
@@ -228,8 +334,28 @@ def main():
         sys.exit(f"ERROR: no CVEs found for {args.product} {args.release}.")
 
     have_records = records_present(args.records_dir)
-    have_overlay = load_overlay(args.overlay)
+    overlay_map = load_overlay_map(args.overlay)
+    have_overlay = set(overlay_map)
     report = build_report(release_cves, have_records, have_overlay)
+    report['wrong_fixed_version'] = []
+    report['changelog'] = None
+
+    if args.require_fixed_version:
+        report['wrong_fixed_version'] = overlay_missing_fixed_version(
+            release_cves, overlay_map, args.require_fixed_version)
+
+    if reconcile_pin_vs_changelog:
+        if changelog_path is None:
+            changelog_path = pathlib.Path(args.changelog or DEFAULT_CHANGELOG)
+        if not changelog_path.is_file():
+            sys.exit(f"ERROR: ChangeLog not found: {changelog_path}")
+        prior = load_cve_list(args.prior_release) if args.prior_release else []
+        mentions = load_cve_list(args.mentions) if args.mentions else []
+        block = release_block(changelog_path.read_text(), args.product,
+                              args.release)
+        strict, loose = cves_in_vuln_sections(block)
+        report['changelog'] = reconcile_changelog(
+            strict, loose, release_cves, prior, mentions)
 
     if args.json:
         print(json.dumps({
@@ -240,9 +366,21 @@ def main():
     else:
         print_human(args.product, args.release, report)
 
+    ch = report.get('changelog') or {}
+    # dropped_by_strict is OK iff it equals the mentions list.
+    changelog_ok = not ch or (
+        not ch['pin_missing']
+        and not ch['pin_extra']
+        and not ch['mentions_missing']
+        and not ch['mentions_extra']
+        and not ch['prior_not_in_strict']
+    )
+
     ok = (not report['missing_record']
           and not report['missing_overlay']
-          and not report['orphan_overlay'])
+          and not report['orphan_overlay']
+          and not report['wrong_fixed_version']
+          and changelog_ok)
     if not ok:
         sys.exit(1)
     print("\nOK: every release CVE has a record and an overlay entry.")

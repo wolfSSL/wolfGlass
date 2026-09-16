@@ -1,0 +1,195 @@
+{
+  "document": {
+    "category": "csaf_security_advisory",
+    "csaf_version": "2.0",
+    "title": "wolfSSL: Improper Certificate Signature Verification in X.509 Chain Validation Allows Forged Leaf Certificates",
+    "publisher": {
+      "category": "vendor",
+      "name": "wolfSSL Inc.",
+      "namespace": "https://www.wolfssl.com"
+    },
+    "tracking": {
+      "id": "CVE-2026-5501",
+      "status": "final",
+      "version": "1",
+      "initial_release_date": "2026-04-10T03:07:39.604Z",
+      "current_release_date": "2026-04-22T13:59:28.514Z",
+      "revision_history": [
+        {
+          "number": "1",
+          "date": "2026-04-10T03:07:39.604Z",
+          "summary": "Initial release"
+        }
+      ],
+      "generator": {
+        "engine": {
+          "name": "wolfssl-advisory-gen",
+          "version": "0.3"
+        }
+      }
+    },
+    "distribution": {
+      "tlp": {
+        "label": "WHITE"
+      }
+    },
+    "references": [
+      {
+        "summary": "Canonical CSAF document for CVE-2026-5501",
+        "url": "https://www.wolfssl.com/docs/security-vulnerabilities/csaf/CVE-2026-5501.csaf.json",
+        "category": "self"
+      },
+      {
+        "summary": "wolfSSL published security vulnerabilities",
+        "url": "https://www.wolfssl.com/docs/security-vulnerabilities/",
+        "category": "external"
+      }
+    ],
+    "notes": [
+      {
+        "category": "summary",
+        "title": "Summary",
+        "text": "wolfSSL_X509_verify_cert in the OpenSSL compatibility layer accepts a certificate chain in which the leaf's signature is not checked, if the attacker supplies an untrusted intermediate with Basic Constraints `CA:FALSE` that is legitimately signed by a trusted root. An attacker who obtains any leaf certificate from a trusted CA (e.g. a free DV cert from Let's Encrypt) can forge a certificate for any subject name with any public key and arbitrary signature bytes, and the function returns `WOLFSSL_SUCCESS` / `X509_V_OK`. The native wolfSSL TLS handshake path (`ProcessPeerCerts`) is not susceptible and the issue is limited to applications using the OpenSSL compatibility API directly, which would include integrations of wolfSSL into nginx and haproxy."
+      }
+    ],
+    "aggregate_severity": {
+      "text": "CRITICAL"
+    }
+  },
+  "product_tree": {
+    "branches": [
+      {
+        "category": "vendor",
+        "name": "wolfSSL",
+        "branches": [
+          {
+            "category": "product_name",
+            "name": "wolfSSL",
+            "branches": [
+              {
+                "category": "product_version_range",
+                "name": "<= 5.9.0",
+                "product": {
+                  "product_id": "f338f179-6564-510a-a371-4f9d5ae7cfd8",
+                  "name": "wolfSSL <= 5.9.0",
+                  "product_identification_helper": {
+                    "cpe": "cpe:2.3:a:wolfssl:wolfssl:*:*:*:*:*:*:*:*"
+                  }
+                }
+              },
+              {
+                "category": "product_version",
+                "name": "5.9.1",
+                "product": {
+                  "product_id": "cdbca113-e651-55c5-8648-814580b5cfe8",
+                  "name": "wolfSSL 5.9.1",
+                  "product_identification_helper": {
+                    "cpe": "cpe:2.3:a:wolfssl:wolfssl:5.9.1:*:*:*:*:*:*:*",
+                    "purl": "pkg:github/wolfssl/wolfssl@v5.9.1-stable"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "category": "vendor",
+        "name": "wolfSSL",
+        "branches": [
+          {
+            "category": "product_name",
+            "name": "wolfCrypt FIPS 140-3 Module",
+            "branches": [
+              {
+                "category": "product_version_range",
+                "name": "5.2.1",
+                "product": {
+                  "product_id": "358e11f7-fbf4-5f8c-9d7d-4b129fb9874f",
+                  "name": "wolfCrypt FIPS 140-3 Module 5.2.1",
+                  "product_identification_helper": {
+                    "cpe": "cpe:2.3:a:wolfssl:wolfcrypt:5.2.1:*:*:*:*:*:*:*",
+                    "model_numbers": [
+                      "CMVP Certificate #4718"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "vulnerabilities": [
+    {
+      "cve": "CVE-2026-5501",
+      "notes": [
+        {
+          "category": "description",
+          "text": "wolfSSL_X509_verify_cert in the OpenSSL compatibility layer accepts a certificate chain in which the leaf's signature is not checked, if the attacker supplies an untrusted intermediate with Basic Constraints `CA:FALSE` that is legitimately signed by a trusted root. An attacker who obtains any leaf certificate from a trusted CA (e.g. a free DV cert from Let's Encrypt) can forge a certificate for any subject name with any public key and arbitrary signature bytes, and the function returns `WOLFSSL_SUCCESS` / `X509_V_OK`. The native wolfSSL TLS handshake path (`ProcessPeerCerts`) is not susceptible and the issue is limited to applications using the OpenSSL compatibility API directly, which would include integrations of wolfSSL into nginx and haproxy.",
+          "title": "Vulnerability description"
+        },
+        {
+          "category": "other",
+          "title": "CVSS v4.0",
+          "text": "CVSS v4.0 base score 9.3 (CRITICAL); vector CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N. CSAF 2.0 scores[] cannot encode CVSS v4; the machine-readable v4 rating is provided in the CycloneDX VEX output."
+        }
+      ],
+      "product_status": {
+        "known_affected": [
+          "f338f179-6564-510a-a371-4f9d5ae7cfd8"
+        ],
+        "fixed": [
+          "cdbca113-e651-55c5-8648-814580b5cfe8"
+        ],
+        "known_not_affected": [
+          "358e11f7-fbf4-5f8c-9d7d-4b129fb9874f",
+          "f338f179-6564-510a-a371-4f9d5ae7cfd8"
+        ]
+      },
+      "cwe": {
+        "id": "CWE-295",
+        "name": "Improper Certificate Validation"
+      },
+      "references": [
+        {
+          "summary": "https://github.com/wolfSSL/wolfssl/pull/10102",
+          "url": "https://github.com/wolfSSL/wolfssl/pull/10102",
+          "category": "external"
+        }
+      ],
+      "flags": [
+        {
+          "label": "vulnerable_code_not_present",
+          "product_ids": [
+            "358e11f7-fbf4-5f8c-9d7d-4b129fb9874f"
+          ]
+        }
+      ],
+      "remediations": [
+        {
+          "category": "vendor_fix",
+          "details": "Update to wolfSSL 5.9.1 or later, or avoid relying on wolfSSL_X509_verify_cert in the OpenSSL compatibility layer for chain validation.",
+          "product_ids": [
+            "f338f179-6564-510a-a371-4f9d5ae7cfd8"
+          ],
+          "url": "https://github.com/wolfSSL/wolfssl/pull/10102"
+        },
+        {
+          "category": "no_fix_planned",
+          "details": "No action required for the FIPS-validated module: the affected OpenSSL compatibility layer (wolfSSL_X509_verify_cert) is outside the wolfCrypt FIPS module boundary.",
+          "product_ids": [
+            "358e11f7-fbf4-5f8c-9d7d-4b129fb9874f"
+          ],
+          "url": "https://github.com/wolfSSL/wolfssl/pull/10102"
+        }
+      ],
+      "acknowledgments": [
+        {
+          "summary": "Calif.io in collaboration with Claude and Anthropic Research"
+        }
+      ]
+    }
+  ]
+}

@@ -42,6 +42,15 @@ try {
   writeFileSync(junk, '{ not valid json')
   check('unparsable document exits non-zero', run([junk]).status !== 0)
 
+  // Schema-valid but mandatory-test-violating: the same product_id is both
+  // known_affected and known_not_affected (CSAF 6.1.6). A stub that only
+  // ran the schema test would exit 0; the gate must still fail.
+  const mandatoryFail = join(HERE, 'fixtures', 'schema-ok-mandatory-fail.csaf.json')
+  const mf = run([mandatoryFail])
+  check('schema-valid mandatory-fail fixture exits 1', mf.status === 1)
+  const mfOut = `${mf.stdout}\n${mf.stderr}`
+  check('mandatory-fail names a 6.1.* test', /6[._]1[._]/.test(mfOut))
+
   const validDoc = process.argv[2]
   if (validDoc) {
     check(`valid document exits 0 (${validDoc})`, run([validDoc]).status === 0)
