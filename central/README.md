@@ -7,18 +7,28 @@ These tools run for wolfSSL only. Do not vendor them into a product.
   release is supposed to cover against the CVE records and VEX overlay
   entries present, and fails if any are missing:
 
-      python3 central/advisory-completeness --cve-list advisories/releases/5.9.2.cves
+      python3 central/advisory-completeness --cve-list advisories/releases/5.9.2.cves \
+          --release 5.9.2 \
+          --changelog central/testdata/ChangeLog-5.9.2.md \
+          --prior-release advisories/releases/5.9.2.prior-release.cves \
+          --mentions advisories/releases/5.9.2.mentions.cves \
+          --require-fixed-version 5.9.2
 
       python3 central/advisory-completeness --release 5.9.2 \
           --changelog ../wolfssl/ChangeLog.md
 
   It checks completeness only; it cannot judge whether a determination is
   correct — that is human analysis. `--cve-list` is the CI path (this repo
-  does not contain the product ChangeLog). Count only ChangeLog bullets of
-  the form `* [High] CVE-…`; ids named in the paragraph are ignored.
+  does not contain the product ChangeLog). Count ChangeLog bullets of the
+  form `* [High] CVE-…` as members. The tool also computes a loose set of
+  every CVE id in the Vulnerabilities section and fails if the strict rule
+  dropped an id that is not listed in `--mentions`. `--release` must match
+  the CVE-list filename stem when both flags are set.
 - `csaf-publish` — assemble the `.well-known/csaf` directory (hashes, index,
-  provider-metadata, optional OpenPGP signatures). Sign at deploy, not in git.
-- `csaf-verify` — consumer-side check of hashes and signatures.
+  provider-metadata, optional OpenPGP signatures via pgpy). Sign at deploy,
+  not in git. Honors `SOURCE_DATE_EPOCH`.
+- `csaf-verify` — consumer-side check. Walks `index.txt` and hash sidecars.
+  Signature checks require `--fingerprint` matching provider-metadata.json.
 - `advisory-vex-overlay.schema.json` — the per-CVE overlay schema.
 - `advisory-vex-overlay.example.json` — an overlay example.
 

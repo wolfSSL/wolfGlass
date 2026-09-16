@@ -1,22 +1,34 @@
 #!/usr/bin/env python3
-"""Verify a published CSAF directory: hashes + OpenPGP signatures.
+"""Verify a published CSAF directory: index, hashes, optional OpenPGP.
 
-Consumer-side check. For every CSAF document under the distribution root it
-confirms:
+Consumer-side check. Walks `index.txt` (not a glob of whatever is on disk):
 
-  * the `.sha256` and `.sha512` sidecars match the file bytes, and
-  * the detached `.asc` signature verifies against the published
-    `openpgp-key.asc`.
+  * every path in the index exists and every on-disk TLP document is indexed
+  * `.sha256` and `.sha512` sidecars match the file bytes
+  * `provider-metadata.json` hashes match when sidecars are present
 
-Exit 0 only if every document passes. Uses pgpy for signature checking.
+Unsigned trees (role `csaf_provider`) are the default: hashes + index only.
+Signature mode requires `--fingerprint`, which must match
+`provider-metadata.json` `public_openpgp_keys`. The key is loaded from that
+metadata URL mapped onto the tree, not from a loose file that an attacker with
+web-root write could swap.
+
+Exit 0 only if every check passes. `pgpy` is imported only for signature mode.
 """
 
 import argparse
 import hashlib
+import json
 import pathlib
 import sys
 
-import pgpy
+
+def _require_pgpy():
+    try:
+        import pgpy
+    except ImportError:
+        sys.exit('ERROR: pgpy is required for signature verification')
+    return pgpy
 
 
 def _check_hash(path, algo):
@@ -28,47 +40,133 @@ def _check_hash(path, algo):
     return None if want == got else f'{algo} mismatch'
 
 
+def _index_paths(root):
+    index = root / 'index.txt'
+    if not index.is_file():
+        sys.exit(f'ERROR: missing index.txt under {root}')
+    rels = []
+    for ln in index.read_text().splitlines():
+        line = ln.strip()
+        if line and not line.startswith('#'):
+            rels.append(line)
+    if not rels:
+        sys.exit(f'ERROR: index.txt is empty under {root}')
+    return rels
+
+
+def _disk_docs(root):
+    """CSAF documents on disk: TLP/year/*.json, excluding hash sidecars."""
+    found = []
+    for tlp in ('white', 'green', 'amber', 'red'):
+        tlp_dir = root / tlp
+        if not tlp_dir.is_dir():
+            continue
+        for p in tlp_dir.glob('*/*.json'):
+            if p.suffix == '.json':
+                found.append(p.relative_to(root).as_posix())
+    return found
+
+
+def _local_key_path(root, url):
+    """Map a metadata key URL onto this tree (last path component)."""
+    name = url.rstrip('/').rsplit('/', 1)[-1]
+    candidate = root / name
+    if candidate.is_file():
+        return candidate
+    sys.exit(f'ERROR: OpenPGP key {url} not found at {candidate}')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--root', default='advisories/publish/.well-known/csaf',
-                   help='Distribution root containing openpgp-key.asc and TLP folders.')
+                   help='Distribution root containing provider-metadata.json.')
+    p.add_argument('--fingerprint', default=None,
+                   help='Signing-key fingerprint. Required to check .asc '
+                        'signatures. Must match provider-metadata.json.')
     args = p.parse_args()
 
     root = pathlib.Path(args.root)
-    pubkey, _ = pgpy.PGPKey.from_file(str(root / 'openpgp-key.asc'))
+    if not root.is_dir():
+        sys.exit(f'ERROR: distribution root not found: {root}')
 
-    docs = sorted(root.glob('*/*/*.json'))
-    if not docs:
-        sys.exit(f'ERROR: no CSAF documents under {root}')
+    md_path = root / 'provider-metadata.json'
+    if not md_path.is_file():
+        sys.exit(f'ERROR: missing provider-metadata.json under {root}')
+    try:
+        metadata = json.loads(md_path.read_text())
+    except json.JSONDecodeError as e:
+        sys.exit(f'ERROR: provider-metadata.json: {e}')
 
+    index_rels = _index_paths(root)
+    disk_rels = _disk_docs(root)
+    index_set = set(index_rels)
+    disk_set = set(disk_rels)
     failures = 0
-    for doc in docs:
+
+    for rel in sorted(index_set - disk_set):
+        print(f'FAIL index lists missing file: {rel}')
+        failures += 1
+    for rel in sorted(disk_set - index_set):
+        print(f'FAIL on-disk document not in index.txt: {rel}')
+        failures += 1
+
+    # provider-metadata is not in index.txt; still check its sidecars.
+    to_hash_paths = [(rel, root / rel) for rel in index_rels]
+    to_hash_paths.append(('provider-metadata.json', md_path))
+
+    pubkey = None
+    pgpy = None
+    if args.fingerprint:
+        want_fp = args.fingerprint.replace(' ', '').upper()
+        keys = metadata.get('public_openpgp_keys') or []
+        match = None
+        for k in keys:
+            fp = str(k.get('fingerprint') or '').replace(' ', '').upper()
+            if fp == want_fp:
+                match = k
+                break
+        if match is None:
+            sys.exit('ERROR: --fingerprint does not match provider-metadata.json')
+        key_url = match.get('url')
+        if not key_url:
+            sys.exit('ERROR: matching public_openpgp_keys entry has no url')
+        pgpy = _require_pgpy()
+        pubkey, _ = pgpy.PGPKey.from_file(str(_local_key_path(root, key_url)))
+
+    for rel, path in to_hash_paths:
+        if rel != 'provider-metadata.json' and rel not in disk_set:
+            continue
+        if not path.is_file():
+            continue
         problems = []
         for algo in ('sha256', 'sha512'):
-            err = _check_hash(doc, algo)
+            err = _check_hash(path, algo)
             if err:
                 problems.append(err)
 
-        asc = doc.with_name(doc.name + '.asc')
-        if not asc.exists():
-            problems.append('missing .asc')
-        else:
-            try:
-                sig = pgpy.PGPSignature.from_file(str(asc))
-                if not pubkey.verify(doc.read_bytes(), sig):
-                    problems.append('signature INVALID')
-            except Exception as e:  # noqa: BLE001
-                problems.append(f'signature error: {e}')
+        if pubkey is not None:
+            asc = path.with_name(path.name + '.asc')
+            if not asc.exists():
+                problems.append('missing .asc')
+            else:
+                try:
+                    sig = pgpy.PGPSignature.from_file(str(asc))
+                    if not pubkey.verify(path.read_bytes(), sig):
+                        problems.append('signature INVALID')
+                except Exception as e:  # noqa: BLE001
+                    problems.append(f'signature error: {e}')
 
-        rel = doc.relative_to(root)
         if problems:
             failures += 1
             print(f'FAIL {rel}: {"; ".join(problems)}')
         else:
-            print(f'OK   {rel}  (sha256+sha512+OpenPGP)')
+            extra = '+OpenPGP' if pubkey is not None else ''
+            print(f'OK   {rel}  (sha256+sha512{extra})')
 
-    print(f'\n{len(docs) - failures}/{len(docs)} documents verified')
+    n = len(index_rels)
+    print(f'\n{n} indexed document(s); '
+          f'{"FAIL" if failures else "OK"} ({failures} failure(s))')
     sys.exit(1 if failures else 0)
 
 

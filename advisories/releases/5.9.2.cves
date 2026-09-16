@@ -1,11 +1,12 @@
 # Pinned CVE membership for wolfSSL 5.9.2
 #
-# Bullet subjects from ChangeLog.md Vulnerabilities for
-# wolfSSL Release 5.9.2. Predecessor ids named only in a
-# bullet body are not listed.
+# ChangeLog Vulnerabilities bullets whose overlay fixed_versions
+# contains 5.9.2. Two 5.9.2 bullets (CVE-2026-6679, CVE-2026-6681)
+# shipped in 5.9.1; they live in 5.9.2.prior-release.cves.
+# CVE-2026-5460 is named only in a bullet body; see
+# 5.9.2.mentions.cves.
 CVE-2026-11310
 CVE-2026-11999
-CVE-2026-6679
 CVE-2026-55958
 CVE-2026-55960
 CVE-2026-55961
@@ -26,7 +27,6 @@ CVE-2026-55962
 CVE-2026-55964
 CVE-2026-6092
 CVE-2026-6331
-CVE-2026-6681
 CVE-2026-10512
 CVE-2026-6678
 CVE-2026-7531

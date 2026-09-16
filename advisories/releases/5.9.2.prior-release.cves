@@ -1,0 +1,5 @@
+# ChangeLog 5.9.2 Vulnerabilities bullets that were fixed in 5.9.1.
+# Records and overlay stay in the catalogue; they are not members of
+# the 5.9.2 pin list or the wolfssl-5.9.2 bundle.
+CVE-2026-6679
+CVE-2026-6681

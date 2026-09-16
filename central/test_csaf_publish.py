@@ -8,6 +8,7 @@ Run:
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
 import tempfile
 import unittest
@@ -15,6 +16,8 @@ from importlib.machinery import SourceFileLoader
 
 HERE = pathlib.Path(__file__).resolve().parent
 PUBLISH = HERE / 'csaf-publish'
+VERIFY = HERE / 'csaf-verify'
+KEYGEN = HERE / 'csaf-keygen'
 GEN = HERE / 'gen-advisory'
 TESTDATA = HERE / 'testdata'
 EXAMPLE_OVERLAY = HERE / 'advisory-vex-overlay.example.json'
@@ -29,6 +32,8 @@ def _load(path, name):
 
 
 pub = _load(PUBLISH, 'csaf_publish')
+ver = _load(VERIFY, 'csaf_verify')
+keygen = _load(KEYGEN, 'csaf_keygen')
 ga = _load(GEN, 'ga')
 
 
@@ -98,6 +103,10 @@ class UnsignedPublishTests(unittest.TestCase):
         md = json.loads((csaf_root / 'provider-metadata.json').read_text())
         self.assertEqual(md['role'], 'csaf_provider')
         self.assertNotIn('public_openpgp_keys', md)
+        md_path = csaf_root / 'provider-metadata.json'
+        for algo in ('sha256', 'sha512'):
+            side = md_path.with_name(md_path.name + '.' + algo)
+            self.assertEqual(side.read_text().split()[0], _sha(md_path, algo))
 
     def test_rerun_drops_stale_files(self):
         csaf_root = self._publish()
@@ -108,6 +117,69 @@ class UnsignedPublishTests(unittest.TestCase):
         self.assertFalse(stale.exists())
         json_docs = sorted(p.name for p in (csaf_root / 'white' / '2026').glob('*.json'))
         self.assertEqual(json_docs, ['cve-2026-5501.json'])
+
+    def test_source_date_epoch_pins_metadata_timestamp(self):
+        saved = os.environ.get('SOURCE_DATE_EPOCH')
+        os.environ['SOURCE_DATE_EPOCH'] = '1700000000'
+        try:
+            csaf_root = self._publish()
+        finally:
+            if saved is None:
+                os.environ.pop('SOURCE_DATE_EPOCH', None)
+            else:
+                os.environ['SOURCE_DATE_EPOCH'] = saved
+        md = json.loads((csaf_root / 'provider-metadata.json').read_text())
+        self.assertEqual(md['last_updated'], '2023-11-14T22:13:20Z')
+
+    def test_case_colliding_tracking_ids_fail(self):
+        # A second document whose tracking id differs only in case must not
+        # silently overwrite the first canonical filename.
+        first = json.loads((self.docs / 'CVE-2026-5501.csaf.json').read_text())
+        (self.docs / 'CVE-2026-5501.csaf.json').unlink()
+        one = json.loads(json.dumps(first))
+        one['document']['tracking']['id'] = 'WolfSSL-SA-1'
+        two = json.loads(json.dumps(first))
+        two['document']['tracking']['id'] = 'wolfssl-sa-1'
+        (self.docs / 'one.csaf.json').write_text(json.dumps(one, indent=2) + '\n')
+        (self.docs / 'two.csaf.json').write_text(json.dumps(two, indent=2) + '\n')
+        with self.assertRaises(SystemExit) as cm:
+            self._publish()
+        self.assertIn('canonicalize', str(cm.exception))
+
+    def test_unsigned_verify_walks_index(self):
+        csaf_root = self._publish()
+        import sys
+        argv = sys.argv
+        try:
+            sys.argv = ['csaf-verify', '--root', str(csaf_root)]
+            with self.assertRaises(SystemExit) as cm:
+                ver.main()
+            self.assertEqual(cm.exception.code, 0)
+        finally:
+            sys.argv = argv
+
+    def test_verify_detects_index_without_file(self):
+        csaf_root = self._publish()
+        index = csaf_root / 'index.txt'
+        index.write_text(index.read_text() + 'white/2026/cve-1999-0001.json\n')
+        import sys
+        argv = sys.argv
+        try:
+            sys.argv = ['csaf-verify', '--root', str(csaf_root)]
+            with self.assertRaises(SystemExit) as cm:
+                ver.main()
+            self.assertEqual(cm.exception.code, 1)
+        finally:
+            sys.argv = argv
+
+
+class KeygenPermTests(unittest.TestCase):
+    def test_secret_written_mode_0600(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d) / 'secret.asc'
+            keygen.write_secret(str(path), 'SECRET\n')
+            mode = path.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600)
 
 
 if __name__ == '__main__':

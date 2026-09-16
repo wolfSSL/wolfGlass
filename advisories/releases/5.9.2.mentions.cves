@@ -1,0 +1,4 @@
+# CVE ids that appear in the 5.9.2 Vulnerabilities section but do not
+# head a bullet. The strict parser drops these; the completeness gate
+# must name them rather than treat a partial miss as success.
+CVE-2026-5460

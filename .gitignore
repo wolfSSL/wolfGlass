@@ -22,7 +22,6 @@ venv/
 # CSAF PoC: throwaway signing key (never commit a secret key) + node deps
 advisories/.poc-key/
 tools/csaf-validate/node_modules/
-tools/csaf-validate/package-lock.json
 
 # Editor / OS
 .DS_Store

@@ -7,18 +7,35 @@ scoping doc, W2 "key custody"). This tool exists so the PoC can produce real
 detached OpenPGP signatures without host GnuPG.
 
 Writes:
-  * <out>.sec.asc  -- the secret key (keep out of git),
+  * <out>.sec.asc  -- the secret key (mode 0600, keep out of git),
   * <out>.pub.asc  -- the public key (published as openpgp-key.asc),
 and prints the primary key fingerprint.
+
+Requires the optional `pgpy` package. Unsigned publish/verify does not.
 """
 
 import argparse
+import os
 import pathlib
 import sys
 
-import pgpy
-from pgpy.constants import (PubKeyAlgorithm, KeyFlags, HashAlgorithm,
-                            SymmetricKeyAlgorithm, CompressionAlgorithm)
+
+def _require_pgpy():
+    try:
+        import pgpy
+        from pgpy.constants import (PubKeyAlgorithm, KeyFlags, HashAlgorithm,
+                                    SymmetricKeyAlgorithm, CompressionAlgorithm)
+    except ImportError:
+        sys.exit('ERROR: pgpy is required for csaf-keygen (PoC keys only)')
+    return (pgpy, PubKeyAlgorithm, KeyFlags, HashAlgorithm,
+            SymmetricKeyAlgorithm, CompressionAlgorithm)
+
+
+def write_secret(path, text):
+    """Write the secret key with mode 0600 before any bytes land."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as fh:
+        fh.write(text)
 
 
 def main():
@@ -31,6 +48,9 @@ def main():
     p.add_argument('--out', default='advisories/.poc-key/csaf-poc',
                    help='Output path prefix for the key files.')
     args = p.parse_args()
+
+    (pgpy, PubKeyAlgorithm, KeyFlags, HashAlgorithm,
+     SymmetricKeyAlgorithm, CompressionAlgorithm) = _require_pgpy()
 
     # RSA-3072 primary + signing capability. RSA keeps the PoC portable across
     # OpenPGP implementations; production may prefer Ed25519.
@@ -46,7 +66,7 @@ def main():
 
     out = pathlib.Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    (out.with_suffix('.sec.asc')).write_text(str(key))
+    write_secret(str(out.with_suffix('.sec.asc')), str(key))
     (out.with_suffix('.pub.asc')).write_text(str(key.pubkey))
 
     print(key.fingerprint.replace(' ', ''))

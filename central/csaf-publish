@@ -15,9 +15,9 @@ and, at the distribution root:
   * `openpgp-key.asc` (the public signing key).
 
 This tool takes the `advisories/out/` directory and lays out a ready-to-host
-`.well-known/csaf/<tlp>/<year>/` tree. Signing is delegated to `gpg`; if no key
-is given the tree is built unsigned (hashes + metadata only) so the layout can
-still be inspected.
+`.well-known/csaf/<tlp>/<year>/` tree. Signing uses `pgpy` when `--key-file` is
+given; if no key is given the tree is built unsigned (hashes + metadata only)
+so the layout can still be inspected. `SOURCE_DATE_EPOCH` pins timestamps.
 
 Pure stdlib. The CSAF filename convention is applied: the tracking id,
 lowercased, with every char outside [+\\-a-z0-9] replaced by '_', plus '.json'.
@@ -28,6 +28,7 @@ import csv
 import datetime as _dt
 import hashlib
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -41,12 +42,25 @@ def canonical_filename(tracking_id):
     return _CANON_STRIP.sub('_', tracking_id.lower()) + '.json'
 
 
-def _year_of(doc):
+def build_timestamp():
+    """ISO-8601-Z timestamp; honors SOURCE_DATE_EPOCH for reproducibility."""
+    sde = os.environ.get('SOURCE_DATE_EPOCH', '').strip()
+    if sde:
+        try:
+            dt = _dt.datetime.fromtimestamp(int(sde), tz=_dt.timezone.utc)
+            return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        except (ValueError, OverflowError, OSError) as e:
+            print(f"WARNING: ignoring invalid SOURCE_DATE_EPOCH={sde!r}: {e}",
+                  file=sys.stderr)
+    return _dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _year_of(doc, timestamp):
     """Distribution sub-folder: year of the initial release date."""
     tr = doc.get('document', {}).get('tracking', {})
     date = tr.get('initial_release_date') or tr.get('current_release_date') or ''
     m = re.match(r'(\d{4})', date)
-    return m.group(1) if m else str(_dt.datetime.now(_dt.timezone.utc).year)
+    return m.group(1) if m else timestamp[:4]
 
 
 def _sha_files(path):
@@ -139,7 +153,7 @@ def main():
     csaf_root.mkdir(parents=True, exist_ok=True)
     _reset_tree(csaf_root)
 
-    timestamp = _dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    timestamp = build_timestamp()
 
     key = None
     fingerprint = None
@@ -151,6 +165,7 @@ def main():
     index_lines = []
     changes_rows = []
     publisher = None
+    used_names = {}
 
     csaf_docs = sorted(docs_dir.glob('*.csaf.json'))
     if not csaf_docs:
@@ -160,12 +175,17 @@ def main():
         doc = json.loads(src.read_text())
         publisher = publisher or doc['document']['publisher']
         tracking_id = doc['document']['tracking']['id']
-        year = _year_of(doc)
+        year = _year_of(doc, timestamp)
         rel_dir = pathlib.Path(args.tlp) / year
         dest_dir = csaf_root / rel_dir
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         dest = dest_dir / canonical_filename(tracking_id)
+        if dest.name in used_names:
+            sys.exit(
+                f'ERROR: tracking ids {used_names[dest.name]!r} and '
+                f'{tracking_id!r} both canonicalize to {dest.name}')
+        used_names[dest.name] = tracking_id
         rel = (rel_dir / dest.name).as_posix()
         # Point the in-document `self` URL at the hosted path *before* hashing
         # and signing, so the published bytes match the canonical location.
@@ -193,10 +213,13 @@ def main():
         for rel, ts in changes_rows:
             w.writerow([rel, ts])
 
-    # provider-metadata.json
+    # provider-metadata.json is hashed (and signed when a key is given).
     md = build_provider_metadata(args.base_url, publisher, fingerprint, timestamp)
-    (csaf_root / 'provider-metadata.json').write_text(
-        json.dumps(md, indent=2) + '\n')
+    md_path = csaf_root / 'provider-metadata.json'
+    md_path.write_text(json.dumps(md, indent=2) + '\n')
+    _sha_files(md_path)
+    if key is not None:
+        _sign(md_path, key)
 
     signed = 'signed' if key is not None else 'UNSIGNED'
     print(f'Published {len(csaf_docs)} CSAF document(s) [{signed}] to {csaf_root}')
