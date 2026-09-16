@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Assemble a CSAF 2.0 *directory-based* distribution from generated CSAF docs.
+
+`gen-advisory` emits the advisory *bodies* (`<id>.csaf.json`). To become a CSAF
+Trusted Provider you must also publish, for every document:
+
+  * a SHA-256 and a SHA-512 hash file,
+  * a detached OpenPGP signature (`.asc`),
+
+and, at the distribution root:
+
+  * `provider-metadata.json` (the discovery file + signing-key fingerprint),
+  * `index.txt`   (every document path, one per line),
+  * `changes.csv` ("path",iso-timestamp, newest first),
+  * `openpgp-key.asc` (the public signing key).
+
+This tool takes the `advisories/out/` directory and lays out a ready-to-host
+`.well-known/csaf/<tlp>/<year>/` tree. Signing is delegated to `gpg`; if no key
+is given the tree is built unsigned (hashes + metadata only) so the layout can
+still be inspected.
+
+Pure stdlib. The CSAF filename convention is applied: the tracking id,
+lowercased, with every char outside [+\\-a-z0-9] replaced by '_', plus '.json'.
+"""
+
+import argparse
+import csv
+import datetime as _dt
+import hashlib
+import json
+import pathlib
+import re
+import shutil
+import sys
+
+_CANON_STRIP = re.compile(r'[^+\-a-z0-9]')
+
+
+def canonical_filename(tracking_id):
+    """CSAF recommended filename for a document tracking id."""
+    return _CANON_STRIP.sub('_', tracking_id.lower()) + '.json'
+
+
+def _year_of(doc):
+    """Distribution sub-folder: year of the initial release date."""
+    tr = doc.get('document', {}).get('tracking', {})
+    date = tr.get('initial_release_date') or tr.get('current_release_date') or ''
+    m = re.match(r'(\d{4})', date)
+    return m.group(1) if m else str(_dt.datetime.now(_dt.timezone.utc).year)
+
+
+def _sha_files(path):
+    """Write <path>.sha256 and <path>.sha512 in `shasum`-style format."""
+    data = path.read_bytes()
+    for algo in ('sha256', 'sha512'):
+        digest = hashlib.new(algo, data).hexdigest()
+        sidecar = path.with_name(path.name + '.' + algo)
+        sidecar.write_text(f'{digest}  {path.name}\n')
+
+
+def _load_key(key_file):
+    """Load an OpenPGP secret key (ASCII-armored) with pgpy."""
+    import pgpy  # imported lazily so unsigned runs need no dependency
+    key, _ = pgpy.PGPKey.from_file(key_file)
+    return key
+
+
+def _sign(path, key):
+    """Detached, ASCII-armored OpenPGP signature over the raw file bytes.
+
+    Signs the document bytes directly (an OpenPGP binary-document signature),
+    which is what a detached `<file>.asc` must verify against."""
+    data = path.read_bytes()
+    sig = key.sign(data)
+    asc = path.with_name(path.name + '.asc')
+    asc.write_text(str(sig))
+    return asc
+
+
+def _key_fingerprint(key):
+    return str(key.fingerprint).replace(' ', '')
+
+
+def _export_pubkey(key, dest):
+    dest.write_text(str(key.pubkey))
+
+
+def build_provider_metadata(base_url, publisher, fingerprint, timestamp):
+    md = {
+        'canonical_url': f'{base_url}/provider-metadata.json',
+        'last_updated': timestamp,
+        'list_on_CSAF_aggregators': True,
+        'metadata_version': '2.0',
+        'mirror_on_CSAF_aggregators': True,
+        'publisher': publisher,
+        'role': 'csaf_trusted_provider' if fingerprint else 'csaf_provider',
+        'distributions': [{'directory_url': f'{base_url}/'}],
+    }
+    if fingerprint:
+        md['public_openpgp_keys'] = [{
+            'fingerprint': fingerprint,
+            'url': f'{base_url}/openpgp-key.asc',
+        }]
+    return md
+
+
+def _reset_tree(csaf_root):
+    """Drop a previous publish so a re-run cannot leave stale documents."""
+    for name in ('index.txt', 'changes.csv', 'provider-metadata.json',
+                 'openpgp-key.asc'):
+        p = csaf_root / name
+        if p.is_file():
+            p.unlink()
+    for tlp in ('white', 'green', 'amber', 'red'):
+        d = csaf_root / tlp
+        if d.is_dir():
+            shutil.rmtree(d)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--docs-dir', default='advisories/out',
+                   help='Directory holding generated *.csaf.json documents.')
+    p.add_argument('--out-root', default='advisories/publish',
+                   help='Distribution root; the .well-known/csaf tree is built here.')
+    p.add_argument('--base-url',
+                   default='https://www.wolfssl.com/.well-known/csaf',
+                   help='Public base URL the tree will be served from.')
+    p.add_argument('--tlp', default='white',
+                   choices=['white', 'green', 'amber', 'red'],
+                   help='TLP label folder for the documents.')
+    p.add_argument('--key-file', default=None,
+                   help='ASCII-armored OpenPGP secret key (pgpy). Omit to skip signing.')
+    args = p.parse_args()
+
+    docs_dir = pathlib.Path(args.docs_dir)
+    csaf_root = pathlib.Path(args.out_root) / '.well-known' / 'csaf'
+    csaf_root.mkdir(parents=True, exist_ok=True)
+    _reset_tree(csaf_root)
+
+    timestamp = _dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    key = None
+    fingerprint = None
+    if args.key_file:
+        key = _load_key(args.key_file)
+        fingerprint = _key_fingerprint(key)
+        _export_pubkey(key, csaf_root / 'openpgp-key.asc')
+
+    index_lines = []
+    changes_rows = []
+    publisher = None
+
+    csaf_docs = sorted(docs_dir.glob('*.csaf.json'))
+    if not csaf_docs:
+        sys.exit(f'ERROR: no *.csaf.json in {docs_dir}')
+
+    for src in csaf_docs:
+        doc = json.loads(src.read_text())
+        publisher = publisher or doc['document']['publisher']
+        tracking_id = doc['document']['tracking']['id']
+        year = _year_of(doc)
+        rel_dir = pathlib.Path(args.tlp) / year
+        dest_dir = csaf_root / rel_dir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        dest = dest_dir / canonical_filename(tracking_id)
+        rel = (rel_dir / dest.name).as_posix()
+        # Point the in-document `self` URL at the hosted path *before* hashing
+        # and signing, so the published bytes match the canonical location.
+        public_url = args.base_url.rstrip('/') + '/' + rel
+        for ref in doc.get('document', {}).get('references', []):
+            if ref.get('category') == 'self':
+                ref['url'] = public_url
+        dest.write_text(json.dumps(doc, indent=2) + '\n')
+
+        _sha_files(dest)
+        if key is not None:
+            _sign(dest, key)
+
+        index_lines.append(rel)
+        released = doc['document']['tracking'].get('current_release_date', timestamp)
+        changes_rows.append((rel, released))
+
+    # index.txt
+    (csaf_root / 'index.txt').write_text('\n'.join(index_lines) + '\n')
+
+    # changes.csv (newest first)
+    changes_rows.sort(key=lambda r: r[1], reverse=True)
+    with (csaf_root / 'changes.csv').open('w', newline='') as fh:
+        w = csv.writer(fh)
+        for rel, ts in changes_rows:
+            w.writerow([rel, ts])
+
+    # provider-metadata.json
+    md = build_provider_metadata(args.base_url, publisher, fingerprint, timestamp)
+    (csaf_root / 'provider-metadata.json').write_text(
+        json.dumps(md, indent=2) + '\n')
+
+    signed = 'signed' if key is not None else 'UNSIGNED'
+    print(f'Published {len(csaf_docs)} CSAF document(s) [{signed}] to {csaf_root}')
+    if fingerprint:
+        print(f'Signing key fingerprint: {fingerprint}')
+
+
+if __name__ == '__main__':
+    main()

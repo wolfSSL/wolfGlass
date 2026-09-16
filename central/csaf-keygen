@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Generate a throwaway OpenPGP signing key for the CSAF PoC (pure Python, pgpy).
+
+This is NOT a production key. Real publishing must use a wolfSSL-controlled key
+whose master part stays offline and whose signing subkey lives in CI (see the
+scoping doc, W2 "key custody"). This tool exists so the PoC can produce real
+detached OpenPGP signatures without host GnuPG.
+
+Writes:
+  * <out>.sec.asc  -- the secret key (keep out of git),
+  * <out>.pub.asc  -- the public key (published as openpgp-key.asc),
+and prints the primary key fingerprint.
+"""
+
+import argparse
+import pathlib
+import sys
+
+import pgpy
+from pgpy.constants import (PubKeyAlgorithm, KeyFlags, HashAlgorithm,
+                            SymmetricKeyAlgorithm, CompressionAlgorithm)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--uid', default='wolfSSL CSAF Signing (PoC - DO NOT TRUST)',
+                   help='User id name for the key.')
+    p.add_argument('--email', default='security@wolfssl.com',
+                   help='User id email.')
+    p.add_argument('--out', default='advisories/.poc-key/csaf-poc',
+                   help='Output path prefix for the key files.')
+    args = p.parse_args()
+
+    # RSA-3072 primary + signing capability. RSA keeps the PoC portable across
+    # OpenPGP implementations; production may prefer Ed25519.
+    key = pgpy.PGPKey.new(PubKeyAlgorithm.RSAEncryptOrSign, 3072)
+    uid = pgpy.PGPUID.new(args.uid, email=args.email)
+    key.add_uid(
+        uid,
+        usage={KeyFlags.Sign},
+        hashes=[HashAlgorithm.SHA512, HashAlgorithm.SHA256],
+        ciphers=[SymmetricKeyAlgorithm.AES256],
+        compression=[CompressionAlgorithm.Uncompressed],
+    )
+
+    out = pathlib.Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    (out.with_suffix('.sec.asc')).write_text(str(key))
+    (out.with_suffix('.pub.asc')).write_text(str(key.pubkey))
+
+    print(key.fingerprint.replace(' ', ''))
+    print(f'secret: {out.with_suffix(".sec.asc")}', file=sys.stderr)
+    print(f'public: {out.with_suffix(".pub.asc")}', file=sys.stderr)
+
+
+if __name__ == '__main__':
+    main()

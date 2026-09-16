@@ -1,21 +1,424 @@
 {
   "_comment": "Canonical wolfSSL VEX overlay consumed by `make advisory` / `scripts/gen-advisory`. Keyed by CVE id; carries the determinations the CVE Program record cannot express (analysis state, justification, fixed versions, remediation, optional FIPS product, optional build-reachability hedge). Constrained by scripts/advisory-vex-overlay.schema.json. To model a wolfCrypt FIPS module as a separate product, add a \"fips\" block per the format in scripts/advisory-vex-overlay.example.json using the real validated module version and CMVP certificate number (do NOT copy the illustrative placeholder values from the example).",
-
   "CVE-2026-5501": {
     "state": "exploitable",
-    "response": ["update"],
+    "response": [
+      "update"
+    ],
     "detail": "Limited to applications using the OpenSSL compatibility API directly (wolfSSL_X509_verify_cert), such as nginx and haproxy integrations. The native wolfSSL TLS handshake path (ProcessPeerCerts) is not susceptible.",
-    "fixed_versions": ["5.9.1"],
+    "fixed_versions": [
+      "5.9.1"
+    ],
     "remediation": "Update to wolfSSL 5.9.1 or later, or avoid relying on wolfSSL_X509_verify_cert in the OpenSSL compatibility layer for chain validation."
   },
-
   "CVE-2026-5778": {
     "state": "exploitable",
-    "response": ["update"],
+    "response": [
+      "update"
+    ],
     "detail": "Integer underflow in the ChaCha20-Poly1305 decryption path of the packet sniffer.",
-    "requires_defines": ["WOLFSSL_SNIFFER", "HAVE_CHACHA", "HAVE_POLY1305"],
+    "requires_defines": [
+      "WOLFSSL_SNIFFER",
+      "HAVE_CHACHA",
+      "HAVE_POLY1305"
+    ],
     "default_status": "off",
-    "fixed_versions": ["5.9.1"],
+    "fixed_versions": [
+      "5.9.1"
+    ],
     "remediation": "Update to wolfSSL 5.9.1 or later. Builds without --enable-sniffer are not affected."
+  },
+  "CVE-2026-11310": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "X.509 trust-chain bypass in the OpenSSL compatibility certificate verifier (wolfSSL_X509_verify_cert()). This affects only builds with --enable-opensslextra (OPENSSL_EXTRA) and whose application validates certificates by calling X509_verify_cert() (OpenSSL compatibility layer function) with caller-supplied untrusted intermediate certificates; for those users it is critical, otherwise the library is unaffected.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later.",
+    "requires_defines": [
+      "OPENSSL_EXTRA"
+    ]
+  },
+  "CVE-2026-11999": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "X.509 trust-chain bypass (path-depth exhaustion) in the OpenSSL compatibility certificate verifier (wolfSSL_X509_verify_cert()). This affects only builds with --enable-opensslextra whose application calls X509_verify_cert() with caller-supplied untrusted intermediates; for those users it is critical, otherwise the library is unaffected.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later.",
+    "requires_defines": [
+      "OPENSSL_EXTRA"
+    ]
+  },
+  "CVE-2026-6679": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "A heap buffer overflow could occur in the DTLS 1.3 ACK serialization path before the connecting peer is authenticated. The buffer overflow was due to an integer truncation when computing the length of the ACK record-number list, causing an undersized buffer to be allocated and then overrun. This affects builds using DTLS 1.3 and wolfSSL version 5.9.0 and earlier. A fix was added to the 5.9.1 release. Thanks to Nicholas Carlini from Anthropic for the report. Fixed in PR 10116.",
+    "fixed_versions": [
+      "5.9.1"
+    ],
+    "remediation": "Update to wolfSSL 5.9.1 or later.",
+    "requires_defines": [
+      "WOLFSSL_DTLS13"
+    ]
+  },
+  "CVE-2026-55958": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Out-of-bounds write in the Renesas TSIP TLS 1.3 transcript buffer. In tsip_StoreMessage() the capacity check guarding the fixed message bag (MSGBAG_SIZE) sets an error code but fails to return, so execution falls through to an XMEMCPY that writes past the end of the buffer once the accumulated TLS 1.3 handshake transcript exceeds MSGBAG_SIZE (8 KB), corrupting adjacent heap state and potentially causing a remote denial of service crash.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later. Builds without the gating feature are not affected.",
+    "requires_defines": [
+      "WOLFSSL_RENESAS_TSIP_TLS"
+    ],
+    "default_status": "off"
+  },
+  "CVE-2026-55960": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Un-negotiated Raw Public Key (RFC 7250) accepted in place of an X.509 certificate, bypassing chain validation. A raw public key has no chain, so ParseCertRelative() accepts it without performing any trust verification; it must therefore only be accepted when RPK was actually negotiated for that peer.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later. Builds without the gating feature are not affected.",
+    "requires_defines": [
+      "HAVE_RPK"
+    ],
+    "default_status": "off"
+  },
+  "CVE-2026-55961": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "wolfSSL_PKCS7_verify() returning success for a degenerate (certs-only) PKCS#7 object that contains no signer. Such an object has empty signerInfos, so the underlying signed-data verification succeeds without authenticating any content.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later.",
+    "requires_defines": [
+      "OPENSSL_EXTRA"
+    ]
+  },
+  "CVE-2026-10097": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "wolfSSL's AVX2-optimized ML-KEM implementation (mlkem_cmp_avx2) compares only 1536 of the 1568 ciphertext bytes during the Fujisaki-Okamoto re-encryption check in ML-KEM-1024 decapsulation. Ciphertexts that differ from the expected re-encryption solely in bytes 1536-1567 bypass implicit rejection and are accepted as valid, breaking IND-CCA2 security.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-6731": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "X.509 name constraint bypass via the Subject Common Name when treated as a DNS-type name. A certificate whose Subject CN violates an issuing CA's DNS name constraints could be accepted. Thanks to d0sf3t (Aradex) for the report. Fixed in PR 10223.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-6091": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Partial-chain certificate verification may accept chains that terminate at a peer-supplied, untrusted intermediate certificate rather than a trusted anchor. An attacker could present a chain that ends at an intermediate they control and have it accepted as valid. Thanks to Dikai Zou for the report. Fixed in PR 10170.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-6094": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Heap buffer overread in wc_PKCS7_DecodeEnvelopedData when parsing crafted PKCS7 EnvelopedData. This could theoretically be triggered by attacker-supplied data delivered via S/MIME or CMS. Thanks to Dikai Zou for the report. Fixed in PR 10128.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-6329": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "PKCS#12 MAC verification uses an attacker-controlled comparison length, weakening the integrity check on the MAC and allowing a mismatched MAC to be accepted. Thanks to Nicholas Carlini from Anthropic for the report. Fixed in PR 10192.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-6330": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "The ML-KEM ARM64 NEON ciphertext comparison only compares half of the input, breaking the Fujisaki-Okamoto transform's implicit rejection and weakening IND-CCA2 security on that code path. Thanks to Nicholas Carlini from Anthropic for the report. Fixed in PR 10192.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-8720": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "wc_Blake2bHmacFinal and wc_Blake2sHmacFinal discard the message when the key length exceeds the block size, producing a MAC that is independent of the input. This bug is specific to the HMAC-BLAKE2 API\u2019s that were added in wolfSSL version 5.9.0. Fixed in PR 10447.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-10098": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "OCSP CertID serial-number length-confusion in wolfSSL_OCSP_resp_find_status allows a same-issuer SingleResponse whose serial is a prefix of the target serial to be reported as the revocation status of a different certificate. Thanks to Kim Youngjoon (Team-Atlanta and Georgia Institute of Technology) for the report. Fixed in PR 10554.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-10592": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Certificates with wildcard DNS SANs (e.g. *.example.com) bypassed CA name-constraint checks. Thanks to tonghuaroot for the report. Fixed in PR 10549.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-7532": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "iPAddress name constraints bypass when WOLFSSL_IP_ALT_NAME is not defined. IP address name constraints are not enforced in that configuration, allowing a certificate to bypass an issuing CA's IP address constraints. Thanks to Ankur Tyagi of Cisco Talos (TALOS-2026-2409) for the report. Fixed in PR 10354.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later. Builds that define WOLFSSL_IP_ALT_NAME already enforced IP constraints."
+  },
+  "CVE-2026-6291": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Bleichenbacher padding oracle in PKCS#7 KTRI decryption. When decrypting PKCS#7 EnvelopedData using RSA PKCS#1 v1.5 key transport, wolfSSL returned distinguishable error codes depending on whether RSA padding validation failed versus whether the decrypted content was malformed.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-7511": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "PKCS7_verify signer confusion allows forged signatures, where the signer associated with a signature is not correctly bound, permitting a forged signature to be accepted. Thanks to Nicholas Carlini from Anthropic for the report. Fixed in PR 10203.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-11703": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Fixed missing SNI/ALPN binding on stateful (session-ID) resumption, which previously skipped the binding check performed for ticket-based resumption. A cached session could be resumed under a different SNI/ALPN than originally negotiated and, where client-authentication policy differs across virtual hosts, carry the cached peer-authentication state into a context it was not established for. Resumption now verifies the SNI/ALPN binding for all paths and declines (falling back to a full handshake) on mismatch. Thanks to Dikai Zou for the report. Fixed in PR 10489.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-55962": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "TLS 1.3 post-handshake authentication (PHA) issue where a server could accept a client's Finished message without the client having sent a Certificate and CertificateVerify. The post-handshake-auth exemption that allows an empty/absent peer certificate was only intended for the initial handshake, but it was also being applied while a post-handshake CertificateRequest was still outstanding.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later. Builds without the gating feature are not affected.",
+    "requires_defines": [
+      "WOLFSSL_POST_HANDSHAKE_AUTH"
+    ],
+    "default_status": "off"
+  },
+  "CVE-2026-55964": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Chain intermediate CA:TRUE without keyCertSign accepted as a signing CA. Intermediate CA certificates are required to have the keyCertSign key usage when a Key Usage extension is present, but chain-supplied temporary CAs (WOLFSSL_TEMP_CA) added while building a certificate path were previously exempted from this check, so an intermediate asserting CA:TRUE but lacking keyCertSign was accepted as a signing CA.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later.",
+    "requires_defines": [
+      "OPENSSL_EXTRA"
+    ]
+  },
+  "CVE-2026-6092": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "When HAVE_ENCRYPT_THEN_MAC is configured, the implementation could fall back to MAC-then-Encrypt rather than enforcing Encrypt-then-MAC. Thanks to Marcin Olejnik (Rockwell Automation) for the report. Fixed in PR 10167.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later.",
+    "requires_defines": [
+      "HAVE_ENCRYPT_THEN_MAC"
+    ]
+  },
+  "CVE-2026-6331": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "HMAC zero-length tag forgery in EVP_DigestVerifyFinal, where a zero-length tag could be accepted as valid during HMAC verification. Thanks to Nicholas Carlini from Anthropic for the report. Fixed in PR 10192.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later.",
+    "requires_defines": [
+      "OPENSSL_EXTRA"
+    ]
+  },
+  "CVE-2026-6681": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "The PKCS#7 decode path ignores the caller-supplied output buffer size (outputSz), allowing decoded content to be written past the bounds of the provided buffer. This affects wolfSSL 5.9.0 and earlier and was fixed in the 5.9.1 release. Thanks to Nicholas Carlini from Anthropic for the report. Fixed in PR 10116.",
+    "fixed_versions": [
+      "5.9.1"
+    ],
+    "remediation": "Update to wolfSSL 5.9.1 or later."
+  },
+  "CVE-2026-10512": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "The X25519 x86_64 assembly implementation fails to clear the most significant bit during the final modular reduction, so the computed result may not be fully reduced modulo the field prime 2^255 - 19. This can leave the field element in a non-canonical form, producing an incorrect result from the scalar multiplication and potentially a wrong shared secret. Thanks to Haruki Oyama for the report. Fixed in PR 10536.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-6678": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Integer underflow in wc_PKCS7_DecryptOri when handling crafted Other Recipient Info, leading to incorrect length handling during decryption. Thanks to Dikai Zou for the report. Fixed in PR 10203.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-7531": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Use-after-free in PQC hybrid key-share handling. This is an incomplete-fix follow-up to CVE-2026-5460 (released in 5.9.1): a malicious TLS 1.3 server sending a truncated PQC hybrid KeyShare can still trigger the error cleanup path to operate on freed memory. Thanks to Thai Duong (Calif.io / Anthropic) for the report. Fixed in PR 10327.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-6325": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Out-of-bounds write in SetSuitesHashSigAlgo when processing an oversized signature algorithms list, allowing a write past the bounds of the destination buffer. Thanks to Muhammad Arya Arjuna Habibullah (Pelioro) for the report. Fixed in PR 10204.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-6412": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Certificate policy and RFC 8446 compliance concerns regarding the continued acceptance of SHA-1/MD5 in certificate processing. Thanks to Xiangdong Li (Student, Beijing University of Posts and Telecommunications [BUPT]) for the report. Fixed in PR 10222.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
+  },
+  "CVE-2026-6450": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "A CRL critical extension bypass exists in ParseCRL_Extensions where critical extensions are not properly enforced, allowing a crafted CRL with an unhandled critical extension to be accepted. This only affects builds with CRL support enabled and where a crafted CRL had a trusted signature when parsed. Thanks to Oleh Konko (@1seal) for the report. Fixed in PR 10239.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later. Builds without the gating feature are not affected.",
+    "requires_defines": [
+      "HAVE_CRL"
+    ],
+    "default_status": "off"
+  },
+  "CVE-2026-12340": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "Out-of-bounds heap read during SM2/SM3 certificate signature verification. When parsing a certificate with an SM3wSM2 signature, the Subject Key Identifier computation reads the trailing 65 bytes of the public key without checking that the key is at least that long. A public key shorter than 65 bytes results in an out-of-bounds heap read, leading to a potential crash (denial of service); there is no out-of-bounds write. Note this only affects builds with SM2 support (--enable-sm2 or --enable-all). Thanks to David Pokora, Trail of Bits (in collaboration with Anthropic). Fixed in PR 10641.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later. Builds without the gating feature are not affected.",
+    "requires_defines": [
+      "WOLFSSL_SM2"
+    ],
+    "default_status": "off"
+  },
+  "CVE-2026-55967": {
+    "state": "exploitable",
+    "response": [
+      "update"
+    ],
+    "detail": "AES-GCM encryption/decryption with extremely large cumulative single message sizes (>64 GiB) were not properly rejected by the streaming APIs, allowing counter wrap, keystream reuse, and consequent plaintext recovery. Thanks to NVIDIA Project Vanessa for the report. Fixed in PR 10709.",
+    "fixed_versions": [
+      "5.9.2"
+    ],
+    "remediation": "Update to wolfSSL 5.9.2 or later."
   }
 }
