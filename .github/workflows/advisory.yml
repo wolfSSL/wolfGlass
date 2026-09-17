@@ -2,6 +2,8 @@ name: Advisory catalogue
 
 # Validates the committed CSAF/VEX catalogue (records + overlay) and the
 # publish layout. Generated documents are built in CI, not committed.
+# Every advisories/releases/<version>/ directory is a release; the workflow
+# does not name 5.9.1 or 5.9.2.
 
 on:
   push:
@@ -42,21 +44,33 @@ jobs:
             central/test_advisory_completeness.py \
             central/test_csaf_publish.py
 
-      - name: Completeness gate against ChangeLog + 5.9.2 pin
+      - name: Completeness gate for every release directory
         run: |
-          python3 central/advisory-completeness \
-            --cve-list advisories/releases/5.9.2.cves \
-            --release 5.9.2 \
-            --changelog central/testdata/ChangeLog-5.9.2.md \
-            --prior-release advisories/releases/5.9.2.prior-release.cves \
-            --mentions advisories/releases/5.9.2.mentions.cves \
-            --require-fixed-version 5.9.2
+          python3 - <<'PY'
+          import subprocess, sys
+          import importlib.util
+          from importlib.machinery import SourceFileLoader
+          loader = SourceFileLoader('ac', 'central/advisory-completeness')
+          spec = importlib.util.spec_from_loader('ac', loader)
+          ac = importlib.util.module_from_spec(spec)
+          loader.exec_module(ac)
+          dirs = ac.list_release_dirs('advisories/releases')
+          if not dirs:
+              sys.exit('ERROR: no advisories/releases/<version>/ directories')
+          rc = 0
+          for d in dirs:
+              print(f'--- {d} ---')
+              r = subprocess.run([sys.executable, 'central/advisory-completeness',
+                                  '--release-dir', str(d)])
+              rc |= r.returncode
+          sys.exit(rc)
+          PY
 
   catalogue:
-    name: generate and validate 5.9.2
+    name: generate and validate all releases
     runs-on: ubuntu-24.04
     needs: unit
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -85,55 +99,80 @@ jobs:
           print('OK: advisories/vex-overlay.json matches schema')
           PY
 
-      - name: Generate 5.9.2 CSAF + CycloneDX VEX
-        run: |
-          set -e
-          REC="${RUNNER_TEMP}/rec592"
-          ADV="${RUNNER_TEMP}/adv592"
-          mkdir -p "$REC" "$ADV"
-          while read -r id; do
-            [ -n "$id" ] || continue
-            cp "advisories/records/${id}.json" "$REC/"
-          done < <(grep -E '^CVE-[0-9]{4}-[0-9]{4,}$' advisories/releases/5.9.2.cves)
-          python3 central/gen-advisory \
-            --records-dir "$REC" \
-            --vex-overlay advisories/vex-overlay.json \
-            --out-dir "$ADV"
-          python3 central/gen-advisory \
-            --records-dir "$REC" \
-            --vex-overlay advisories/vex-overlay.json \
-            --advisory-id wolfssl-5.9.2 \
-            --csaf-out "$ADV/wolfssl-5.9.2.csaf.json" \
-            --cdx-vex-out "$ADV/wolfssl-5.9.2.cdx.json"
-          echo "ADV=$ADV" >> "$GITHUB_ENV"
-
-      - name: Bundle membership matches 5.9.2.cves
+      - name: Generate CSAF + CycloneDX VEX for every release
         run: |
           python3 - <<'PY'
-          import pathlib, os, sys
-          sys.path.insert(0, 'central')
+          import os, pathlib, shutil, subprocess, sys
           import importlib.util
           from importlib.machinery import SourceFileLoader
           loader = SourceFileLoader('ac', 'central/advisory-completeness')
           spec = importlib.util.spec_from_loader('ac', loader)
           ac = importlib.util.module_from_spec(spec)
           loader.exec_module(ac)
-          pin = ac.load_cve_list('advisories/releases/5.9.2.cves')
-          doc = __import__('json').loads(
-              pathlib.Path(os.environ['ADV'], 'wolfssl-5.9.2.csaf.json').read_text())
-          got = [v['cve'] for v in doc['vulnerabilities']]
-          if set(got) != set(pin) or len(got) != len(pin):
-              print('pin', pin, file=sys.stderr)
-              print('got', got, file=sys.stderr)
-              sys.exit('ERROR: bundle CVE set does not match 5.9.2.cves')
-          print(f'OK: bundle has {len(got)} CVEs matching 5.9.2.cves')
+          adv = pathlib.Path(os.environ['RUNNER_TEMP']) / 'adv'
+          rec_root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'rec'
+          adv.mkdir(parents=True)
+          records = pathlib.Path('advisories/records')
+          dirs = ac.list_release_dirs('advisories/releases')
+          if not dirs:
+              sys.exit('ERROR: no release directories')
+          for d in dirs:
+              pin = ac.load_cve_list(d / 'cves')
+              rec = rec_root / d.name
+              rec.mkdir(parents=True)
+              for cve in pin:
+                  src = records / f'{cve}.json'
+                  if not src.is_file():
+                      sys.exit(f'ERROR: missing record {src}')
+                  shutil.copy(src, rec / src.name)
+              subprocess.check_call([
+                  sys.executable, 'central/gen-advisory',
+                  '--records-dir', str(rec),
+                  '--vex-overlay', 'advisories/vex-overlay.json',
+                  '--out-dir', str(adv),
+              ])
+              subprocess.check_call([
+                  sys.executable, 'central/gen-advisory',
+                  '--records-dir', str(rec),
+                  '--vex-overlay', 'advisories/vex-overlay.json',
+                  '--advisory-id', f'wolfssl-{d.name}',
+                  '--csaf-out', str(adv / f'wolfssl-{d.name}.csaf.json'),
+                  '--cdx-vex-out', str(adv / f'wolfssl-{d.name}.cdx.json'),
+              ])
+              print(f'OK: generated {d.name} ({len(pin)} CVEs)')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as fh:
+              fh.write(f'ADV={adv}\n')
+          PY
+
+      - name: Bundle membership matches each pin list
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+          import importlib.util
+          from importlib.machinery import SourceFileLoader
+          loader = SourceFileLoader('ac', 'central/advisory-completeness')
+          spec = importlib.util.spec_from_loader('ac', loader)
+          ac = importlib.util.module_from_spec(spec)
+          loader.exec_module(ac)
+          adv = pathlib.Path(os.environ['ADV'])
+          for d in ac.list_release_dirs('advisories/releases'):
+              pin = ac.load_cve_list(d / 'cves')
+              doc = json.loads((adv / f'wolfssl-{d.name}.csaf.json').read_text())
+              got = [v['cve'] for v in doc['vulnerabilities']]
+              if set(got) != set(pin) or len(got) != len(pin):
+                  print('pin', pin, file=sys.stderr)
+                  print('got', got, file=sys.stderr)
+                  sys.exit(f'ERROR: bundle CVE set does not match {d.name}')
+              print(f'OK: wolfssl-{d.name} has {len(got)} CVEs')
           PY
 
       - name: CSAF 2.0 strict schema + mandatory tests
         run: node tools/csaf-validate/csaf_validate.mjs "${ADV}"/*.csaf.json
 
       - name: csaf_validate runner contract
-        run: node tools/csaf-validate/test_csaf_validate.mjs "${ADV}/CVE-2026-11310.csaf.json"
+        run: |
+          VALID=$(ls "${ADV}"/CVE-*.csaf.json | head -n 1)
+          node tools/csaf-validate/test_csaf_validate.mjs "${VALID}"
 
       - name: CycloneDX 1.6 strict schema and CVSS v4 ratings
         run: |
@@ -167,12 +206,12 @@ jobs:
         run: |
           python3 central/csaf-publish \
             --docs-dir "${ADV}" \
-            --out-root "${RUNNER_TEMP}/publish592"
+            --out-root "${RUNNER_TEMP}/publish"
           python3 central/csaf-verify \
-            --root "${RUNNER_TEMP}/publish592/.well-known/csaf"
+            --root "${RUNNER_TEMP}/publish/.well-known/csaf"
           python3 - <<'PY'
           import hashlib, json, os, pathlib, sys
-          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'publish592' / '.well-known' / 'csaf'
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'publish' / '.well-known' / 'csaf'
           index = [ln for ln in (root / 'index.txt').read_text().splitlines() if ln]
           docs = sorted(p for p in root.glob('*/*/*.json'))
           if len(index) != len(docs):

@@ -9,4 +9,3 @@ the `.github/workflows/advisory.yml` jobs.  Committed so the tests are hermetic
 | `CVE-2026-5501.json` | Real published wolfSSL CNA record (CVSS v4 only). |
 | `CVE-2026-5778.json` | Real published wolfSSL CNA record (CVSS v4 only). |
 | `CVE-2026-5999.json` | **Synthetic fixture, not a real CVE.** Carries a CVSS v3.1 block so the CSAF `scores[]` emission path (and the CVSS-consistency mandatory tests 6.1.8/6.1.9) is exercised; the v4-only records above never populate `scores[]` in CSAF 2.0. |
-| `ChangeLog-5.9.2.md` | Frozen wolfSSL 5.9.2 release header and Vulnerabilities section. Completeness CI reconciles the pin list against this file so the gate does not need a sibling wolfssl checkout. |
