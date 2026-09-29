@@ -1,0 +1,415 @@
+#!/usr/bin/env python3
+"""Draft missing VEX overlay entries from a product ChangeLog.
+
+`gen-advisory` writes CSAF and CycloneDX VEX from CVE records plus
+`advisories/vex-overlay.json`. It does not read the ChangeLog, and it does
+not invent the per-CVE determination. This tool fills that gap with a draft:
+
+  * one overlay object per `* [Sev] CVE-…` bullet in the release's
+    Vulnerabilit* sections,
+  * `detail` from the first paragraph of that bullet,
+  * `fixed_versions` set to this release,
+  * `requires_defines` only when a build macro sits next to a gating phrase
+    (`--enable-… (MACRO)`, `define MACRO`, `support (MACRO)`, …).
+
+Existing overlay keys are left unchanged, so a second run does not wipe a
+review. The command prints a REVIEW line for every macro it guessed and for
+every `--enable-…` flag that had no macro in parentheses. Read those lines
+before `advisory-completeness` and `gen-advisory`. A wrong macro in this file
+becomes a signed VEX statement after publish.
+
+Pure stdlib. The ChangeLog membership rules match `advisory-completeness`.
+"""
+
+import argparse
+import importlib.util
+import json
+import pathlib
+import re
+import sys
+from importlib.machinery import SourceFileLoader
+
+_SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPTS_DIR.parent
+
+DEFAULT_OVERLAY = _REPO_ROOT / 'advisories' / 'vex-overlay.json'
+DEFAULT_CHANGELOG = _REPO_ROOT.parent / 'wolfssl' / 'ChangeLog.md'
+
+_DETAIL_LIMIT = 600
+
+# A build macro, not a short token such as TLS or API. wolfSSL macros in the
+# committed overlay all contain an underscore (OPENSSL_EXTRA, HAVE_RPK, …).
+_MACRO_RE = re.compile(r'\b([A-Z][A-Z0-9]*_[A-Z0-9_]+)\b')
+_ENABLE_RE = re.compile(r'--enable-[a-z0-9-]+')
+# Cue that must sit immediately before the macro (optional opening parenthesis).
+_BEFORE_CUE_RE = re.compile(
+    r'(?:--enable-[a-z0-9-]+'
+    r'|builds?\s+with'
+    r'|builds?\s+using'
+    r'|\bsupport'
+    r'|\bport'
+    r'|\bdefines?'
+    r'|\bdefining'
+    r'|\bmacro'
+    r'|\brequires?'
+    r')\s*\(?\s*$',
+    re.IGNORECASE,
+)
+_AFTER_DEFINED_RE = re.compile(
+    r'^\s*(?:is\s+|are\s+)?(?:defined|enabled)\b',
+    re.IGNORECASE,
+)
+_AFTER_NOT_DEFINED_RE = re.compile(
+    r'^\s*(?:is\s+|are\s+)?not\s+(?:defined|enabled)\b',
+    re.IGNORECASE,
+)
+# "unless MACRO is defined" is an exception, not the gate that reaches the bug.
+_UNLESS_RE = re.compile(r'\b(?:unless|without|except)\s+$', re.IGNORECASE)
+# Bundle switches are not one feature macro. Do not ask the reviewer to invent one.
+_IGNORE_FLAGS = {'--enable-all'}
+_DEFAULT_OFF_RE = re.compile(
+    r'(?:disabled by default|off by default|not enabled by default'
+    r'|not on by default)',
+    re.IGNORECASE,
+)
+
+_NEW_FILE_COMMENT = (
+    "Draft VEX determinations keyed by CVE id. "
+    "central/advisory-overlay-draft fills missing keys from the ChangeLog. "
+    "Review every REVIEW line (especially requires_defines) before "
+    "gen-advisory. Schema: central/advisory-vex-overlay.schema.json."
+)
+
+
+def _load_completeness():
+    path = _SCRIPTS_DIR / 'advisory-completeness'
+    loader = SourceFileLoader('advisory_completeness', str(path))
+    spec = importlib.util.spec_from_loader('advisory_completeness', loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+ac = _load_completeness()
+
+
+def bullet_bodies(block_lines):
+    """Strict vulnerability bullets and the paragraph lines under each.
+
+    Same membership rule as advisory-completeness: one CVE id per
+    `* [Sev] CVE-…` head. Extra ids on that head are returned as extra_ids
+    and are not drafted (the completeness gate treats them as mentions).
+    """
+    found = []
+    seen = set()
+    in_vuln = False
+    i = 0
+    lines = list(block_lines)
+    while i < len(lines):
+        line = lines[i]
+        if re.match(r'^##\s', line):
+            in_vuln = 'vulnerab' in line.lower()
+            i += 1
+            continue
+        if not in_vuln:
+            i += 1
+            continue
+        m = ac._BULLET_CVE_RE.match(line)
+        if not m:
+            i += 1
+            continue
+        cve = m.group(1)
+        rest = line[m.end():]
+        extra_ids = [cid for cid in ac._CVE_ID_RE.findall(rest) if cid != cve]
+        rest = ac._CVE_ID_RE.sub('', rest)
+        rest = rest.strip().strip(',').strip()
+        body = [rest] if rest else []
+        i += 1
+        while i < len(lines):
+            nxt = lines[i]
+            if nxt.startswith('* ') or nxt.startswith('##'):
+                break
+            body.append(nxt)
+            i += 1
+        if cve in seen:
+            continue
+        seen.add(cve)
+        found.append({
+            'cve': cve,
+            'body': body,
+            'extra_ids': extra_ids,
+        })
+    return found
+
+
+def first_paragraph(body_lines):
+    """First non-empty paragraph, with internal whitespace collapsed."""
+    chunks = []
+    for line in body_lines:
+        if line.strip() == '':
+            if chunks:
+                break
+            continue
+        chunks.append(line.strip())
+    text = re.sub(r'\s+', ' ', ' '.join(chunks)).strip()
+    return _clip_detail(text)
+
+
+def _clip_detail(text):
+    if len(text) <= _DETAIL_LIMIT:
+        return text
+    cut = text[:_DETAIL_LIMIT]
+    ends = list(re.finditer(r'[.!?](?=\s|$)', cut))
+    if ends:
+        return cut[:ends[-1].end()].strip()
+    return cut.rstrip()
+
+
+def guess_defines(text):
+    """Return (macros, configure_flags_without_a_macro).
+
+    A macro is recorded only when a gating cue sits immediately before it,
+    or when the words after it are "defined" / "enabled" (and not "not
+    defined"). `--enable-foo` with no `(MACRO)` is reported for review and
+    is not stored: the overlay schema has no field for a configure flag, and
+    inventing the macro is how the 5.9.2 draft grew an extra flag.
+    """
+    macros = []
+    for m in _MACRO_RE.finditer(text):
+        name = m.group(1)
+        before = text[max(0, m.start() - 64):m.start()]
+        after = text[m.end():m.end() + 32]
+        if _AFTER_NOT_DEFINED_RE.match(after):
+            continue
+        if _UNLESS_RE.search(before):
+            continue
+        take = bool(_BEFORE_CUE_RE.search(before) or _AFTER_DEFINED_RE.match(after))
+        if take and name not in macros:
+            macros.append(name)
+
+    bare_flags = []
+    for m in _ENABLE_RE.finditer(text):
+        after = text[m.end():m.end() + 48]
+        if re.match(r'\s*\(\s*[A-Z][A-Z0-9]*_', after):
+            continue
+        flag = m.group(0)
+        if flag in _IGNORE_FLAGS or flag in bare_flags:
+            continue
+        bare_flags.append(flag)
+    return macros, bare_flags
+
+
+def guess_default_status(text):
+    """'off' when the bullet says the gate is off by default. Otherwise omit."""
+    if _DEFAULT_OFF_RE.search(text):
+        return 'off'
+    return None
+
+
+def draft_entry(product, release, body_lines):
+    """One overlay object plus REVIEW notes. Notes are not written to JSON."""
+    paragraph = first_paragraph(body_lines)
+    full = re.sub(r'\s+', ' ', ' '.join(line.strip() for line in body_lines if line.strip()))
+    macros, bare_flags = guess_defines(full)
+    if paragraph:
+        detail = paragraph
+    else:
+        detail = ('Draft found no ChangeLog paragraph for this CVE. '
+                  'Replace this sentence.')
+    entry = {
+        'state': 'exploitable',
+        'response': ['update'],
+        'detail': detail,
+        'fixed_versions': [release],
+        'remediation': f'Update to {product} {release} or later.',
+    }
+    notes = []
+    if macros:
+        entry['requires_defines'] = macros
+        notes.append('requires_defines: ' + ', '.join(macros))
+    else:
+        notes.append('requires_defines: (none guessed)')
+    default_status = guess_default_status(full)
+    if default_status:
+        entry['default_status'] = default_status
+        notes.append("default_status: off (bullet says the gate is off by default)")
+    for flag in bare_flags:
+        notes.append(
+            f'{flag} has no (MACRO) next to it. '
+            'Add requires_defines yourself if that flag gates the bug.'
+        )
+    notes.append('detail is the first ChangeLog paragraph. Shorten it if it is too long.')
+    return entry, notes
+
+
+def render_entry(cve, entry):
+    """JSON object member, indented as a top-level key (2 spaces)."""
+    blob = json.dumps({cve: entry}, indent=2, ensure_ascii=True)
+    inner = blob.strip()
+    if not (inner.startswith('{') and inner.endswith('}')):
+        sys.exit(f'ERROR: cannot render overlay entry for {cve}')
+    return inner[1:-1].strip('\n')
+
+
+def splice_entries(text, entries):
+    """Append entries to overlay JSON without reformatting the keys already there.
+
+    json.dumps of the whole file rewrites \\u escapes (the catalogue stores
+    some characters that way). Splicing keeps the reviewed bytes stable.
+    """
+    if not entries:
+        return text
+    if not text.endswith('\n'):
+        text += '\n'
+    stripped = text[:-1].rstrip()
+    if not stripped.endswith('}'):
+        sys.exit('ERROR: overlay file is not a JSON object.')
+    head = stripped[:-1].rstrip()
+    addition = ',\n'.join(render_entry(cve, entry) for cve, entry in entries)
+    if head.endswith('{'):
+        return head + '\n' + addition + '\n}\n'
+    return head + ',\n' + addition + '\n}\n'
+
+
+def load_overlay_document(path):
+    path = pathlib.Path(path)
+    if not path.is_file():
+        return None, None
+    text = path.read_text()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        sys.exit(f'ERROR: cannot read overlay {path}: {e}')
+    if not isinstance(data, dict):
+        sys.exit(f'ERROR: overlay {path} is not a JSON object.')
+    return data, text
+
+
+def write_overlay(path, text, entries, creating):
+    path = pathlib.Path(path)
+    if creating:
+        doc = {'_comment': _NEW_FILE_COMMENT}
+        for cve, entry in entries:
+            doc[cve] = entry
+        payload = json.dumps(doc, indent=2, ensure_ascii=True) + '\n'
+    else:
+        payload = splice_entries(text, entries)
+    # Refuse to replace the catalogue with bytes that do not parse.
+    json.loads(payload)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    tmp.write_text(payload)
+    tmp.replace(path)
+
+
+def build_drafts(changelog_text, product, release, overlay_keys, replace):
+    """Return (actions, notes_by_cve).
+
+    actions is a list of (cve, entry) to write. notes_by_cve maps every
+    bullet CVE to a list of REVIEW strings (empty when the key was kept).
+    """
+    block = ac.release_block(changelog_text, product, release)
+    bullets = bullet_bodies(block)
+    if not bullets:
+        sys.exit(f'ERROR: no vulnerability bullets for {product} {release}.')
+    actions = []
+    notes = {}
+    for bullet in bullets:
+        cve = bullet['cve']
+        lines = []
+        if bullet['extra_ids']:
+            lines.append(
+                'same bullet also names '
+                + ', '.join(bullet['extra_ids'])
+                + '. This draft does not add those ids. '
+                'advisory-completeness treats them as mentions, not members.'
+            )
+        if cve in overlay_keys and not replace:
+            lines.append('kept the existing overlay entry.')
+            notes[cve] = lines
+            continue
+        entry, entry_notes = draft_entry(product, release, bullet['body'])
+        if cve in overlay_keys and replace:
+            lines.append('replaced the existing overlay entry.')
+        lines.extend(entry_notes)
+        actions.append((cve, entry))
+        notes[cve] = lines
+    return actions, notes
+
+
+def print_report(product, release, actions, notes, dry_run, path, created):
+    added = len(actions)
+    kept = sum(1 for lines in notes.values()
+               if any(line.startswith('kept ') for line in lines))
+    print(f'Draft overlay: {product} {release}')
+    print(f'  file: {path}')
+    if dry_run:
+        print('  dry run: file not written')
+    elif created:
+        print('  wrote a new overlay file')
+    elif added:
+        print(f'  appended {added} entr{"y" if added == 1 else "ies"}')
+    else:
+        print('  nothing to add')
+    print(f'  new or replaced: {added}')
+    print(f'  kept: {kept}')
+    print()
+    print('REVIEW each block. Then run advisory-completeness.')
+    print('gen-advisory reads this file. It does not read the ChangeLog.')
+    print()
+    for cve, lines in notes.items():
+        print(f'  {cve}')
+        for line in lines:
+            print(f'    {line}')
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description='Append draft VEX overlay entries for one release from '
+                    'the ChangeLog vulnerability bullets. Does not publish.')
+    p.add_argument('--release', required=True,
+                   help='Product release version, e.g. 5.9.4.')
+    p.add_argument('--changelog', default=str(DEFAULT_CHANGELOG),
+                   help='Path to the product ChangeLog '
+                        f'(default: {DEFAULT_CHANGELOG}).')
+    p.add_argument('--overlay', default=str(DEFAULT_OVERLAY),
+                   help=f'Overlay JSON to update (default: {DEFAULT_OVERLAY}).')
+    p.add_argument('--product', default='wolfSSL',
+                   help='Product name in the ChangeLog header and in the '
+                        'remediation sentence (default: wolfSSL).')
+    p.add_argument('--replace', action='store_true',
+                   help='Overwrite overlay keys that this release drafts. '
+                        'Default: leave an existing key unchanged.')
+    p.add_argument('--dry-run', action='store_true',
+                   help='Print the draft and write nothing.')
+    args = p.parse_args()
+
+    if not ac._VERSION_RE.match(args.release):
+        sys.exit(f'ERROR: --release {args.release!r} is not a version like 5.9.4')
+
+    changelog_path = pathlib.Path(args.changelog)
+    if not changelog_path.is_file():
+        sys.exit(f'ERROR: ChangeLog not found: {changelog_path}')
+
+    overlay_path = pathlib.Path(args.overlay)
+    data, text = load_overlay_document(overlay_path)
+    creating = data is None
+    if creating:
+        overlay_keys = set()
+        text = ''
+    else:
+        overlay_keys = {k for k in data if ac._CVE_ID_RE.fullmatch(k)}
+
+    actions, notes = build_drafts(
+        changelog_path.read_text(), args.product, args.release,
+        overlay_keys, args.replace)
+
+    if actions and not args.dry_run:
+        write_overlay(overlay_path, text, actions, creating)
+
+    print_report(args.product, args.release, actions, notes,
+                 args.dry_run, overlay_path, creating and bool(actions) and not args.dry_run)
+
+
+if __name__ == '__main__':
+    main()

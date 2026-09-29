@@ -20,6 +20,15 @@ These tools run for wolfSSL only. Do not vendor them into a product.
   an id that is not listed in `mentions.cves`. `supplemental.cves` holds ids
   fixed in this release but not a ChangeLog bullet here (late disclosure).
   `--release` must match the CVE-list path when both flags are set.
+- `advisory-overlay-draft` — write missing overlay keys from the ChangeLog.
+  It does not publish. It leaves an existing key unchanged. Read every
+  REVIEW line, then run `advisory-completeness`.
+
+      python3 central/advisory-overlay-draft --release 5.9.4 \
+          --changelog ../wolfssl/ChangeLog.md
+
+      python3 central/advisory-overlay-draft --release 5.9.4 \
+          --changelog ../wolfssl/ChangeLog.md --dry-run
 - `csaf-publish` — assemble the `.well-known/csaf` directory (hashes, index,
   provider-metadata, optional OpenPGP signatures via pgpy). Sign at deploy,
   not in git. Honors `SOURCE_DATE_EPOCH`.
