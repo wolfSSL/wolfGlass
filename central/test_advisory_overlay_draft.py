@@ -89,6 +89,54 @@ class GuessTests(unittest.TestCase):
         self.assertNotIn('ALLOW_INVALID_CERTSIGN', macros)
         self.assertEqual(flags, ['--enable-sm2'])
 
+    def test_is_defined_is_not_a_gate(self):
+        text = (
+            'Without NO_SESSION_CACHE_REF, wolfSSL_get_session() does not '
+            'return a session object. The bug is gone when '
+            'NO_SESSION_CACHE_REF is defined.'
+        )
+        macros, _flags = aod.guess_defines(text)
+        self.assertNotIn('NO_SESSION_CACHE_REF', macros)
+
+    def test_paren_pair_either_order(self):
+        macros, flags = aod.guess_defines(
+            'Only builds with ALPN (HAVE_ALPN / --enable-alpn) are affected.')
+        self.assertEqual(macros, ['HAVE_ALPN'])
+        self.assertEqual(flags, [])
+        macros, flags = aod.guess_defines(
+            'Only builds with ALPN (--enable-alpn / HAVE_ALPN) are affected.')
+        self.assertEqual(macros, ['HAVE_ALPN'])
+        self.assertEqual(flags, [])
+
+    def test_paren_pair_after_without_is_not_a_gate(self):
+        macros, _flags = aod.guess_defines(
+            'The bug is present without (HAVE_ALPN / --enable-alpn).')
+        self.assertEqual(macros, [])
+
+
+class VexLineTests(unittest.TestCase):
+    def test_vex_line_is_used_and_prose_is_not_guessed(self):
+        body = [
+            'Without NO_SESSION_CACHE_REF, the getter returns a reference.',
+            'VEX: fixed=5.9.4; defines=',
+            '',
+            'Later text mentions --enable-opensslextra (OPENSSL_EXTRA).',
+        ]
+        entry, notes = aod.draft_entry('wolfSSL', '5.9.4', body)
+        self.assertNotIn('requires_defines', entry)
+        self.assertNotIn('VEX:', entry['detail'])
+        self.assertTrue(any('default build' in line for line in notes))
+        self.assertNotIn('OPENSSL_EXTRA', entry.get('requires_defines', []))
+
+    def test_vex_line_sets_the_macro(self):
+        body = [
+            'ALPN parsing.',
+            'VEX: fixed=5.9.4; defines=HAVE_ALPN',
+        ]
+        entry, notes = aod.draft_entry('wolfSSL', '5.9.4', body)
+        self.assertEqual(entry['requires_defines'], ['HAVE_ALPN'])
+        self.assertTrue(any('VEX line' in line for line in notes))
+
 
 class BulletTests(unittest.TestCase):
     def setUp(self):
@@ -196,6 +244,43 @@ class CliTests(unittest.TestCase):
             self.assertEqual(again.returncode, 0, again.stderr)
             self.assertIn('nothing to add', again.stdout)
             self.assertEqual(json.loads(overlay.read_text()), data)
+
+    def test_replace_rewrites_the_key_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            changelog = root / 'ChangeLog.md'
+            changelog.write_text(
+                '# wolfSSL Release 5.9.2 (Jun 23, 2026)\n'
+                '## Vulnerabilities\n'
+                '* [High] CVE-2026-55967\n'
+                '  New text.\n'
+            )
+            overlay = root / 'vex-overlay.json'
+            overlay.write_text(json.dumps({
+                '_comment': 'keep',
+                'CVE-2026-55967': {
+                    'state': 'exploitable',
+                    'detail': 'Old text.',
+                },
+                'CVE-2026-1000': {
+                    'state': 'exploitable',
+                    'detail': 'Leave this key.',
+                },
+            }, indent=2) + '\n')
+            run = subprocess.run(
+                [sys.executable, str(SCRIPT),
+                 '--release', '5.9.2',
+                 '--changelog', str(changelog),
+                 '--overlay', str(overlay),
+                 '--replace'],
+                check=False, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            text = overlay.read_text()
+            self.assertEqual(text.count('"CVE-2026-55967"'), 1)
+            data = json.loads(text)
+            self.assertEqual(data['CVE-2026-55967']['detail'], 'New text.')
+            self.assertEqual(data['CVE-2026-1000']['detail'], 'Leave this key.')
+            self.assertEqual(data['_comment'], 'keep')
 
 
 if __name__ == '__main__':

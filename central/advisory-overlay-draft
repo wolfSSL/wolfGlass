@@ -10,7 +10,8 @@ not invent the per-CVE determination. This tool fills that gap with a draft:
   * `detail` from the first paragraph of that bullet,
   * `fixed_versions` set to this release,
   * `requires_defines` only when a build macro sits next to a gating phrase
-    (`--enable-… (MACRO)`, `define MACRO`, `support (MACRO)`, …).
+    (`--enable-… (MACRO)`, `(MACRO / --enable-…)`, `define MACRO`,
+    `support (MACRO)`, …), or when the bullet carries a `VEX:` line.
 
 Existing overlay keys are left unchanged, so a second run does not wipe a
 review. The command prints a REVIEW line for every macro it guessed and for
@@ -55,16 +56,26 @@ _BEFORE_CUE_RE = re.compile(
     r')\s*\(?\s*$',
     re.IGNORECASE,
 )
-_AFTER_DEFINED_RE = re.compile(
-    r'^\s*(?:is\s+|are\s+)?(?:defined|enabled)\b',
-    re.IGNORECASE,
-)
 _AFTER_NOT_DEFINED_RE = re.compile(
     r'^\s*(?:is\s+|are\s+)?not\s+(?:defined|enabled)\b',
     re.IGNORECASE,
 )
 # "unless MACRO is defined" is an exception, not the gate that reaches the bug.
+# "MACRO is defined" alone is not a gate: that sentence is often the off switch.
 _UNLESS_RE = re.compile(r'\b(?:unless|without|except)\s+$', re.IGNORECASE)
+_UNLESS_WORD_RE = re.compile(r'\b(?:unless|without|except)\b', re.IGNORECASE)
+# (HAVE_ALPN / --enable-alpn) or (--enable-alpn / HAVE_ALPN).
+_PAREN_PAIR_RE = re.compile(
+    r'\(\s*(?:'
+    r'([A-Z][A-Z0-9]*_[A-Z0-9_]+)\s*/\s*(--enable-[a-z0-9-]+)'
+    r'|'
+    r'(--enable-[a-z0-9-]+)\s*/\s*([A-Z][A-Z0-9]*_[A-Z0-9_]+)'
+    r')\s*\)'
+)
+# One machine line per bullet. defines= with no names means the default build.
+_VEX_LINE_RE = re.compile(
+    r'^VEX:\s*fixed=([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s*;\s*defines=([A-Z0-9_,]*)\s*$'
+)
 # Bundle switches are not one feature macro. Do not ask the reviewer to invent one.
 _IGNORE_FLAGS = {'--enable-all'}
 _DEFAULT_OFF_RE = re.compile(
@@ -143,14 +154,20 @@ def bullet_bodies(block_lines):
 
 
 def first_paragraph(body_lines):
-    """First non-empty paragraph, with internal whitespace collapsed."""
+    """First non-empty paragraph, with internal whitespace collapsed.
+
+    A `VEX:` line is machine input. It is not part of the detail text.
+    """
     chunks = []
     for line in body_lines:
-        if line.strip() == '':
+        stripped = line.strip()
+        if _VEX_LINE_RE.match(stripped):
+            continue
+        if stripped == '':
             if chunks:
                 break
             continue
-        chunks.append(line.strip())
+        chunks.append(stripped)
     text = re.sub(r'\s+', ' ', ' '.join(chunks)).strip()
     return _clip_detail(text)
 
@@ -165,16 +182,66 @@ def _clip_detail(text):
     return cut.rstrip()
 
 
+def _pair_macros(text):
+    """Macros named beside a configure flag inside one pair of parentheses.
+
+    `(HAVE_ALPN / --enable-alpn)` and `(--enable-alpn / HAVE_ALPN)` both
+    count. A pair after "without", "unless", or "except" is the off switch
+    and is not recorded. Returns (macros, spans of pairs that were seen).
+    """
+    macros = []
+    spans = []
+    for m in _PAREN_PAIR_RE.finditer(text):
+        spans.append(m.span())
+        name = m.group(1) or m.group(4)
+        before = text[max(0, m.start() - 48):m.start()]
+        if _UNLESS_WORD_RE.search(before):
+            continue
+        if name not in macros:
+            macros.append(name)
+    return macros, spans
+
+
+def parse_vex_line(body_lines):
+    """Return the bullet's `VEX:` line, or None when the bullet has none.
+
+    The dict has `fixed`, `defines` (a list), and `error` (a string or None).
+    A present line is authoritative: the caller must not also guess.
+    """
+    found = None
+    for line in body_lines:
+        m = _VEX_LINE_RE.match(line.strip())
+        if not m:
+            continue
+        if found is not None:
+            return {
+                'fixed': found['fixed'],
+                'defines': [],
+                'error': 'more than one VEX line. None were applied.',
+            }
+        raw = m.group(2)
+        names = [part.strip() for part in raw.split(',') if part.strip()]
+        bad = [name for name in names if not _MACRO_RE.fullmatch(name)]
+        found = {
+            'fixed': m.group(1),
+            'defines': [] if bad else names,
+            'error': (
+                'VEX defines has a name that is not a build macro: '
+                + ', '.join(bad)
+            ) if bad else None,
+        }
+    return found
+
+
 def guess_defines(text):
     """Return (macros, configure_flags_without_a_macro).
 
     A macro is recorded only when a gating cue sits immediately before it,
-    or when the words after it are "defined" / "enabled" (and not "not
-    defined"). `--enable-foo` with no `(MACRO)` is reported for review and
-    is not stored: the overlay schema has no field for a configure flag, and
-    inventing the macro is how the 5.9.2 draft grew an extra flag.
+    or when it shares parentheses with `--enable-…`. "MACRO is defined" is
+    not a cue: that sentence is often the switch that turns the bug off.
+    `--enable-foo` with no macro is reported for review and is not stored.
     """
-    macros = []
+    macros, pair_spans = _pair_macros(text)
     for m in _MACRO_RE.finditer(text):
         name = m.group(1)
         before = text[max(0, m.start() - 64):m.start()]
@@ -183,14 +250,17 @@ def guess_defines(text):
             continue
         if _UNLESS_RE.search(before):
             continue
-        take = bool(_BEFORE_CUE_RE.search(before) or _AFTER_DEFINED_RE.match(after))
-        if take and name not in macros:
+        if _BEFORE_CUE_RE.search(before) and name not in macros:
             macros.append(name)
 
     bare_flags = []
     for m in _ENABLE_RE.finditer(text):
+        if any(start <= m.start() < end for start, end in pair_spans):
+            continue
         after = text[m.end():m.end() + 48]
         if re.match(r'\s*\(\s*[A-Z][A-Z0-9]*_', after):
+            continue
+        if re.search(r'/\s*$', text[max(0, m.start() - 8):m.start()]):
             continue
         flag = m.group(0)
         if flag in _IGNORE_FLAGS or flag in bare_flags:
@@ -209,8 +279,26 @@ def guess_default_status(text):
 def draft_entry(product, release, body_lines):
     """One overlay object plus REVIEW notes. Notes are not written to JSON."""
     paragraph = first_paragraph(body_lines)
-    full = re.sub(r'\s+', ' ', ' '.join(line.strip() for line in body_lines if line.strip()))
-    macros, bare_flags = guess_defines(full)
+    prose = [line for line in body_lines if not _VEX_LINE_RE.match(line.strip())]
+    full = re.sub(r'\s+', ' ', ' '.join(line.strip() for line in prose if line.strip()))
+    vex = parse_vex_line(body_lines)
+    notes = []
+    if vex is not None:
+        macros = [] if vex['error'] else vex['defines']
+        bare_flags = []
+        if vex['error']:
+            notes.append(vex['error'])
+        elif vex['fixed'] != release:
+            notes.append(
+                f"VEX fixed={vex['fixed']} does not match this release ({release})."
+            )
+        if not vex['error']:
+            if macros:
+                notes.append('requires_defines from the VEX line: ' + ', '.join(macros))
+            else:
+                notes.append('VEX line sets no requires_defines. The default build is affected.')
+    else:
+        macros, bare_flags = guess_defines(full)
     if paragraph:
         detail = paragraph
     else:
@@ -223,12 +311,13 @@ def draft_entry(product, release, body_lines):
         'fixed_versions': [release],
         'remediation': f'Update to {product} {release} or later.',
     }
-    notes = []
     if macros:
         entry['requires_defines'] = macros
-        notes.append('requires_defines: ' + ', '.join(macros))
-    else:
-        notes.append('requires_defines: (none guessed)')
+    if vex is None:
+        if macros:
+            notes.append('requires_defines: ' + ', '.join(macros))
+        else:
+            notes.append('requires_defines: (none guessed)')
     default_status = guess_default_status(full)
     if default_status:
         entry['default_status'] = default_status
@@ -285,13 +374,23 @@ def load_overlay_document(path):
     return data, text
 
 
-def write_overlay(path, text, entries, creating):
+def dump_overlay(data):
+    return json.dumps(data, indent=2, ensure_ascii=True) + '\n'
+
+
+def write_overlay(path, text, data, entries, creating, replacing):
     path = pathlib.Path(path)
     if creating:
         doc = {'_comment': _NEW_FILE_COMMENT}
         for cve, entry in entries:
             doc[cve] = entry
-        payload = json.dumps(doc, indent=2, ensure_ascii=True) + '\n'
+        payload = dump_overlay(doc)
+    elif replacing:
+        # Assigning an existing key keeps its place. A new key is appended.
+        # Splicing a second copy left the old text in the file, unread.
+        for cve, entry in entries:
+            data[cve] = entry
+        payload = dump_overlay(data)
     else:
         payload = splice_entries(text, entries)
     # Refuse to replace the catalogue with bytes that do not parse.
@@ -378,7 +477,8 @@ def main():
                    help='Product name in the ChangeLog header and in the '
                         'remediation sentence (default: wolfSSL).')
     p.add_argument('--replace', action='store_true',
-                   help='Overwrite overlay keys that this release drafts. '
+                   help='Rewrite overlay keys that this release drafts. '
+                        'The old key is replaced in the parsed object. '
                         'Default: leave an existing key unchanged.')
     p.add_argument('--dry-run', action='store_true',
                    help='Print the draft and write nothing.')
@@ -404,8 +504,9 @@ def main():
         changelog_path.read_text(), args.product, args.release,
         overlay_keys, args.replace)
 
+    replacing = any(cve in overlay_keys for cve, _entry in actions)
     if actions and not args.dry_run:
-        write_overlay(overlay_path, text, actions, creating)
+        write_overlay(overlay_path, text, data, actions, creating, replacing)
 
     print_report(args.product, args.release, actions, notes,
                  args.dry_run, overlay_path, creating and bool(actions) and not args.dry_run)
