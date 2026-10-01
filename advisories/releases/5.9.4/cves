@@ -1,0 +1,17 @@
+# Pinned CVE membership for wolfSSL 5.9.4
+#
+# ChangeLog Vulnerabilities bullets whose overlay fixed_versions
+# contains 5.9.4. Every 5.9.4 bullet shipped in 5.9.4, so there is
+# no prior-release.cves. CVE-2026-6731 is named only in a bullet
+# body (the CVE-2026-89134 incomplete-fix note); see mentions.cves.
+CVE-2026-93302
+CVE-2026-89102
+CVE-2026-89136
+CVE-2026-93304
+CVE-2026-89133
+CVE-2026-89134
+CVE-2026-89135
+CVE-2026-15442
+CVE-2026-94417
+CVE-2026-94418
+CVE-2026-94419
