@@ -2,13 +2,16 @@
 """Generate CycloneDX 1.6 and SPDX 2.3 SBOMs for wolfssl."""
 
 import argparse
+import errno
 import hashlib
 import io
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 import uuid
 from datetime import datetime, timezone
 
@@ -342,6 +345,48 @@ def build_timestamp():
     else:
         dt = datetime.now(timezone.utc)
     return dt, dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def write_json_atomic(obj, path):
+    """Write `obj` as JSON to `path` atomically via a sibling temp file and
+    os.replace, so a crash or ENOSPC mid-write cannot leave a truncated
+    document that a later CI step would pick up as valid."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        st = None
+    # Only a new path or a plain regular file gets the temp+replace dance.  A
+    # symlink (including /dev/stdout), device or fifo is written through
+    # directly so the link target is updated rather than the link replaced.
+    if st is not None and not stat.S_ISREG(st.st_mode):
+        with open(path, 'w') as f:
+            json.dump(obj, f, indent=2)
+            f.write('\n')
+        return
+    # os.replace only needs a writable directory; keep refusing a read-only
+    # output the way a plain open(path, 'w') does.
+    if st is not None and not os.access(path, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), path)
+    if st is not None:
+        mode = stat.S_IMODE(st.st_mode)
+    else:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or '.',
+                               prefix=os.path.basename(path) + '.')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(obj, f, indent=2)
+            f.write('\n')
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # Known metadata for optional external dependencies.  Version is detected
@@ -1046,11 +1091,17 @@ def _collect_srcs(srcs_args, srcs_file):
                 continue
             paths.append(stripped)
 
+    # Dedup on the normalized absolute path, not the raw string, so the same
+    # path spelled two ways (foo.c and ./foo.c) collapses to one entry instead
+    # of tripping srcs_merkle_hash's duplicate-basename guard.  Symlinks are
+    # not resolved: an alias with its own basename stays a distinct entry.
+    # The first spelling is kept for opening/hashing.
     seen = set()
     deduped = []
     for p in paths:
-        if p not in seen:
-            seen.add(p)
+        key = os.path.normpath(os.path.abspath(p))
+        if key not in seen:
+            seen.add(key)
             deduped.append(p)
 
     if not deduped:
@@ -1939,12 +1990,8 @@ def main():
     )
 
     try:
-        with open(args.cdx_out, 'w') as f:
-            json.dump(cdx, f, indent=2)
-            f.write('\n')
-        with open(args.spdx_out, 'w') as f:
-            json.dump(spdx, f, indent=2)
-            f.write('\n')
+        write_json_atomic(cdx, args.cdx_out)
+        write_json_atomic(spdx, args.spdx_out)
     except OSError as e:
         sys.exit(f"ERROR: cannot write SBOM output: {e}")
 
