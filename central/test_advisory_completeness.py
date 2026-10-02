@@ -200,9 +200,9 @@ class ReleaseCatalogueTests(unittest.TestCase):
         self.overlay = ac.load_overlay_map(
             str(ROOT / 'advisories' / 'vex-overlay.json'))
 
-    def test_discovers_5_9_1_and_5_9_2(self):
+    def test_discovers_5_9_1_5_9_2_and_5_9_4(self):
         names = [p.name for p in self.dirs]
-        self.assertEqual(names, ['5.9.1', '5.9.2'])
+        self.assertEqual(names, ['5.9.1', '5.9.2', '5.9.4'])
 
     def test_every_release_is_fully_covered(self):
         self.assertTrue(self.dirs)
