@@ -39,6 +39,11 @@ def iter_share_files(share_dir):
             yield full, os.path.relpath(full, share_dir)
 
 
+def is_inside(base, path):
+    """True if absolute path equals base or lies beneath it."""
+    return os.path.commonpath([base, path]) == base
+
+
 def source_revision(src_root):
     """Return the source git revision if available, else an empty string."""
     try:
@@ -66,7 +71,19 @@ def main():
     if not os.path.isdir(share_dir):
         sys.exit(f"ERROR: no share/ directory at {share_dir}")
 
+    # --subdir is joined onto --dest and then written into. An absolute value
+    # (os.path.join discards --dest) or one containing .. would place and
+    # overwrite files outside the product's vendoring path, so require it to
+    # resolve to a location inside --dest.
+    if os.path.isabs(args.subdir):
+        sys.exit(f"ERROR: --subdir must be relative to --dest, got absolute "
+                 f"{args.subdir!r}.")
     dest_root = os.path.join(args.dest, args.subdir)
+    dest_abs = os.path.realpath(args.dest)
+    dest_root_abs = os.path.realpath(dest_root)
+    if not is_inside(dest_abs, dest_root_abs):
+        sys.exit(f"ERROR: --subdir {args.subdir!r} escapes --dest; it must "
+                 f"resolve to a path inside {args.dest!r}.")
     files = sorted(iter_share_files(share_dir), key=lambda p: p[1])
 
     if args.check:
@@ -97,6 +114,20 @@ def main():
             sys.exit(1)
         print("OK: vendored wolfGlass files match share/.")
         return
+
+    # A symlink already present under dest_root (a file, or a directory on
+    # the way to one) would redirect a write outside it. Resolve every target
+    # before writing anything and refuse if one leaves dest_root.
+    targets = [rel for _, rel in files]
+    if os.path.isfile(version_file):
+        targets.append("VERSION")
+    if source_rev:
+        targets.append(".wolfglass-rev")
+    for rel in targets:
+        if not is_inside(dest_root_abs,
+                         os.path.realpath(os.path.join(dest_root, rel))):
+            sys.exit(f"ERROR: {rel!r} under {dest_root!r} resolves outside "
+                     f"it through a symlink; refusing to write.")
 
     count = 0
     for src, rel in files:
