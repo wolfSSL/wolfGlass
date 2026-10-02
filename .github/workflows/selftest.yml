@@ -8,6 +8,7 @@ on:
     branches: [master]
   pull_request:
 
+# This workflow only reads the repo and runs tests; no write access needed.
 permissions:
   contents: read
 
@@ -48,6 +49,7 @@ jobs:
             tests/test_gen_sbom.py \
             tests/test_sbom.py \
             tests/test_sbom_identity.py \
+            tests/test_low_findings.py \
             tests/test_iar_sbom.py \
             tests/test_wolfglass_sync.py
 
@@ -62,6 +64,9 @@ jobs:
 
       - name: Run SBOM identity tests
         run: python -m unittest tests/test_sbom_identity.py
+
+      - name: Run low-findings tests
+        run: python -m unittest tests/test_low_findings.py
 
       - name: Run IAR frontend tests
         run: python -m unittest tests/test_iar_sbom.py
