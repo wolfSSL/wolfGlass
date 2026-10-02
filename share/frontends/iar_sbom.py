@@ -61,10 +61,37 @@ def parse_configs(root):
     return configs
 
 
-def collect_sources(root, proj_dir):
-    """Return (present, missing) absolute paths of compiled source files."""
+def _excluded_from(el, cfg_name):
+    """True if a <file> or <group> carries an <excluded> block naming
+    cfg_name -- IAR drops it from that build configuration, so it is not
+    compiled in."""
+    excluded = el.find('excluded')
+    if excluded is None:
+        return False
+    return any((c.text or '').strip() == cfg_name
+               for c in excluded.findall('configuration'))
+
+
+def _compiled_files(el, cfg_name):
+    """Yield the <file> elements under el (the project or a <group>) that are
+    not excluded from cfg_name.  An excluded <group> drops every file in it
+    and in its nested groups."""
+    for child in el:
+        if _excluded_from(child, cfg_name):
+            continue
+        if child.tag == 'group':
+            yield from _compiled_files(child, cfg_name)
+        elif child.tag == 'file':
+            yield child
+
+
+def collect_sources(root, proj_dir, cfg_name):
+    """Return (present, missing) absolute paths of the source files compiled in
+    configuration cfg_name.  Files and groups IAR marks <excluded> for
+    cfg_name are dropped; listing them would over-report the compiled source
+    set."""
     srcs = []
-    for file_el in root.iter('file'):
+    for file_el in _compiled_files(root, cfg_name):
         name_el = file_el.find('name')
         if name_el is None or not name_el.text:
             continue
@@ -136,7 +163,7 @@ def main():
         cfg_name = max(configs, key=lambda k: len(configs[k]))
 
     defines = configs[cfg_name]
-    srcs, missing = collect_sources(root, proj_dir)
+    srcs, missing = collect_sources(root, proj_dir, cfg_name)
     if not srcs:
         sys.exit("ERROR: no existing source files found in .ewp")
     if missing:
